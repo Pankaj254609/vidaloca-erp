@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
-from datetime import datetime
+from datetime import datetime, date
 
 # --- Theme Configuration ---
 st.set_page_config(page_title="Vida Loca Advanced ERP", layout="wide")
@@ -89,13 +89,31 @@ def load_data():
 
 df_prod, df_map, df_sales, df_stock = load_data()
 
-def get_actual_inventory():
+# --- Date-Filter Powered Calculation Engine ---
+def get_actual_inventory(start_date=None, end_date=None):
     df_p, df_m, df_sa, df_st = load_data()
+    
+    # 1. Calculate Inward stock based on Date Filter
     inward_stock = df_p.set_index('Product Code')['QTY'].to_dict()
+    if not df_st.empty and start_date and end_date:
+        try:
+            df_st['Parsed_Date'] = pd.to_datetime(df_st['Date & Time']).dt.date
+            df_st = df_st[(df_st['Parsed_Date'] >= start_date) & (df_st['Parsed_Date'] <= end_date)]
+        except:
+            pass # Fallback if format mismatches safely
+
     for _, row in df_st.iterrows():
         p_code = row['Product Code']
         if p_code in inward_stock: inward_stock[p_code] += row['Added QTY']
             
+    # 2. Filter Sales Data Sheet by Range
+    if not df_sa.empty and start_date and end_date:
+        try:
+            df_sa['Parsed_Date'] = pd.to_datetime(df_sa['Date']).dt.date
+            df_sa = df_sa[(df_sa['Parsed_Date'] >= start_date) & (df_sa['Parsed_Date'] <= end_date)]
+        except:
+            pass
+
     sold_stock = {p_code: 0 for p_code in df_p['Product Code'].values}
     for _, sale in df_sa.iterrows():
         c_sku = sale['Channel SKU']
@@ -141,7 +159,17 @@ menu = st.sidebar.radio("📌 CONTROL PANEL:", [
 # ==================== LIVE DASHBOARD ====================
 if menu == "📊 Live Dashboard":
     st.markdown("<h1 style='color:#0f172a;'>📊 OMS Core Dashboard</h1>", unsafe_allow_html=True)
-    df_actual = get_actual_inventory()
+    
+    st.sidebar.write("---")
+    st.sidebar.write("### 📅 Date Range Filter")
+    
+    # Elegant date selection inputs
+    today = date.today()
+    start_d = st.sidebar.date_input("Start Date", date(today.year, 1, 1))
+    end_d = st.sidebar.date_input("End Date", today)
+    
+    # Process inventory query with injected date constraints
+    df_actual = get_actual_inventory(start_date=start_d, end_date=end_d)
     
     st.sidebar.write("---")
     st.sidebar.write("### 🎛️ Quick Filters")
@@ -159,14 +187,13 @@ if menu == "📊 Live Dashboard":
     with m_col1:
         st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Unique Master SKUs</div><div class="metric-value">{len(df_actual)}</div></div>', unsafe_allow_html=True)
     with m_col2:
-        st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Units Sold Out</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum())}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Units Sold (Selected Period)</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum())}</div></div>', unsafe_allow_html=True)
     with m_col3:
-        st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Available Warehouse Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Net Available Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
     
     st.write("---")
-    st.subheader("📋 Real-time Multi-channel Inventory Ledger")
+    st.subheader(f"📋 Multi-channel Report ({start_d.strftime('%d-%b-%Y')} to {end_d.strftime('%d-%b-%Y')})")
     
-    # Safe rendering configuration for stable cross-platform performance
     st.dataframe(
         df_actual[["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "QTY", "Total Sold QTY", "Actual Balance Stock"]], 
         column_config={
@@ -190,7 +217,7 @@ elif menu == "📦 1. MASTER SKU Sheet":
             if st.button("🚀 Process & Sync Master Data"):
                 bulk_df.to_csv(PROD_FILE, index=False)
                 st.success("Master dataset processed successfully!")
-                st.st.rerun()
+                st.rerun()
     with tab2:
         with st.form("master_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
@@ -208,7 +235,7 @@ elif menu == "📦 1. MASTER SKU Sheet":
             if st.form_submit_button("Append Product Record") and p_code:
                 pd.DataFrame([[cat, p_code, name, p_code, color, size, brand, p_type, comp_code, qty, img_url]], columns=df_prod.columns).to_csv(PROD_FILE, mode='a', header=False, index=False)
                 st.success("New SKU configuration committed successfully!")
-                st.st.rerun()
+                st.rerun()
     st.dataframe(df_prod, use_container_width=True, hide_index=True)
 
 # ==================== 2. CHANEL SKU MAP SHEET ====================
@@ -225,7 +252,7 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
             if st.button("🚀 Sync Link Map Table"):
                 bulk_df.to_csv(MAP_FILE, index=False)
                 st.success("Mapping configuration linked successfully!")
-                st.st.rerun()
+                st.rerun()
     with tab2:
         with st.form("map_form", clear_on_submit=True):
             c_sku = st.text_input("Seller SKU listed on Channels").strip()
@@ -236,7 +263,7 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
             if st.form_submit_button("Commit Connection Link") and c_sku:
                 pd.DataFrame([[c_sku, m_sku, ch_name, pack_of, brand]], columns=df_map.columns).to_csv(MAP_FILE, mode='a', header=False, index=False)
                 st.success("Mapping connected successfully!")
-                st.st.rerun()
+                st.rerun()
     st.dataframe(df_map, use_container_width=True, hide_index=True)
 
 # ==================== 3. ADD INVENTORY SHEET ====================
@@ -250,7 +277,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
         if st.form_submit_button("Commit Fresh Inventory QTY") and p_code:
             pd.DataFrame([[current_time, p_code, add_qty]], columns=df_stock.columns).to_csv(STOCK_FILE, mode='a', header=False, index=False)
             st.success("Physical warehouse stock updated successfully!")
-            st.st.rerun()
+            st.rerun()
     st.dataframe(df_stock, use_container_width=True, hide_index=True)
 
 # ==================== 4. SALE DATA SHEET ====================
@@ -267,7 +294,7 @@ elif menu == "📤 4. SALE DATA Sheet":
             if st.button("🚀 Deduct Mapped Inventory levels"):
                 bulk_df.to_csv(SALES_FILE, index=False)
                 st.success("Order evaluation complete. Live inventory depleted cleanly!")
-                st.st.rerun()
+                st.rerun()
     with tab2:
         with st.form("sale_form", clear_on_submit=True):
             s_date = st.date_input("Invoice Date").strftime("%Y-%m-%d")
@@ -277,5 +304,5 @@ elif menu == "📤 4. SALE DATA Sheet":
             if st.form_submit_button("Commit Manual Sales Entry") and c_sku:
                 pd.DataFrame([[s_date, c_sku, brand, qty]], columns=df_sales.columns).to_csv(SALES_FILE, mode='a', header=False, index=False)
                 st.success("Sales entry recorded successfully!")
-                st.st.rerun()
+                st.rerun()
     st.dataframe(df_sales, use_container_width=True, hide_index=True)
