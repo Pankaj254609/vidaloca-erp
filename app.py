@@ -81,7 +81,6 @@ def get_actual_inventory(start_date=None, end_date=None):
         p_code = row['Product Code']
         if p_code in inward_stock: inward_stock[p_code] += row['Added QTY']
             
-    # FIXED: Replaced '&&' with proper Python 'and' syntax
     if not df_sa.empty and start_date and end_date:
         try:
             df_sa['Parsed_Date'] = pd.to_datetime(df_sa['Date']).dt.date
@@ -154,15 +153,7 @@ if menu == "📊 Live Dashboard":
     with m_col3: 
         st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
     
-    # --- DYNAMIC GRAPH SECTION ---
-    st.write("---")
-    st.subheader("📈 Stock vs Sales Analytics Chart")
-    if not df_actual.empty:
-        chart_data = df_actual.groupby('Product Code')[['Total Inward Stock', 'Total Sold QTY', 'Actual Balance Stock']].sum()
-        st.bar_chart(chart_data.head(30), color=["#3b82f6", "#f97316", "#10b981"])
-    else:
-        st.info("No data available to plot chart indicators.")
-
+    # GRAPH REMOVED FROM HERE
     st.write("---")
     st.subheader("📋 Inventory Ledger Table")
     st.dataframe(df_actual[["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "Total Inward Stock", "Total Sold QTY", "Actual Balance Stock"]], column_config={"Image URL": st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
