@@ -69,8 +69,6 @@ df_prod, df_map, df_sales, df_stock = load_data()
 
 def get_actual_inventory(start_date=None, end_date=None):
     df_p, df_m, df_sa, df_st = load_data()
-    
-    # Base Inward calculation
     inward_stock = df_p.set_index('Product Code')['QTY'].to_dict()
     
     if not df_st.empty and start_date and end_date:
@@ -107,18 +105,18 @@ def get_actual_inventory(start_date=None, end_date=None):
         else:
             if c_sku in sold_stock: sold_stock[c_sku] += s_qty
 
-    total_in_list = []
     balance_list = []
     total_sold_list = []
+    total_inward_list = []
     for _, row in df_p.iterrows():
         p_code = row['Product Code']
         total_in = inward_stock.get(p_code, 0)
         total_sold = sold_stock.get(p_code, 0)
-        total_in_list.append(total_in)
         balance_list.append(total_in - total_sold)
         total_sold_list.append(total_sold)
+        total_inward_list.append(total_in)
         
-    df_p['Total Inward Stock'] = total_in_list
+    df_p['Total Inward Stock'] = total_inward_list
     df_p['Total Sold QTY'] = total_sold_list
     df_p['Actual Balance Stock'] = balance_list
     return df_p
@@ -149,21 +147,22 @@ if menu == "📊 Live Dashboard":
         
     m_col1, m_col2, m_col3 = st.columns(3)
     with m_col1: st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Unique Master SKUs</div><div class="metric-value">{len(df_actual)}</div></div>', unsafe_allow_html=True)
-    with m_col2: st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Units Sold</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum())}</div></div>', unsafe_allow_html=True)
-    with m_col3: st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Net Available Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
+    with m_col2: st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Sale QTY</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum())}</div></div>', unsafe_allow_html=True)
+    with m_col3: st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
     
-    # 📈 NEW FEATURE: LIVE DATE-WISE BAR CHART GRAPH
+    # 📈 --- NEW DYNAMIC GRAPH SECTION ---
     st.write("---")
     st.subheader("📈 Stock vs Sales Analytics Chart")
-    
-    # Preparing summarized dataset for clean bar charts
-    chart_data = df_actual.groupby("Product Code")[["Total Inward Stock", "Total Sold QTY", "Actual Balance Stock"]].sum()
-    
-    # Displaying the Bar Chart
-    st.bar_chart(chart_data)
-    
+    if not df_actual.empty:
+        # Preparing chart dataset grouped by Product Code
+        chart_data = df_actual.groupby('Product Code')[['Total Inward Stock', 'Total Sold QTY', 'Actual Balance Stock']].sum()
+        # Limiting chart view to top 30 SKUs for better readability, can scroll or filter via sidebar
+        st.bar_chart(chart_data.head(30), color=["#3b82f6", "#f97316", "#10b981"])
+    else:
+        st.info("No data available to plot chart indicators.")
+
     st.write("---")
-    st.subheader("📋 Real-time Multi-channel Inventory Ledger")
+    st.subheader("📋 Inventory Ledger Table")
     st.dataframe(df_actual[["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "Total Inward Stock", "Total Sold QTY", "Actual Balance Stock"]], column_config={"Image URL": st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
 
 # ==================== 1. MASTER SKU SHEET ====================
@@ -281,7 +280,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
                     st.success(f"Processed {added_entries} size updates into Live Inventory Database!")
                     st.rerun()
         else:
-            st.warning("No matching SKU found for this combination.")
+            st.warning("No matching SKU found for this combination in Master Sheet.")
                 
     st.write("---")
     st.subheader("📋 Today's Inward Processing Log (Flushes at 12:00 PM)")
