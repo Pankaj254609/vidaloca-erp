@@ -166,12 +166,11 @@ if menu == "📊 Live Dashboard":
     st.write("---")
     st.subheader("📋 Real-time Multi-channel Inventory Ledger")
     
-    # Render with interactive element formatting
+    # Safe rendering configuration for stable cross-platform performance
     st.dataframe(
         df_actual[["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "QTY", "Total Sold QTY", "Actual Balance Stock"]], 
         column_config={
-            "Image URL": st.column_config.ImageColumn("Preview"),
-            "Type": st.column_config.SelectColumn("Strategy Type", options=["SIMPLE", "BUNDLE"])
+            "Image URL": st.column_config.ImageColumn("Preview")
         },
         use_container_width=True,
         hide_index=True
@@ -191,7 +190,7 @@ elif menu == "📦 1. MASTER SKU Sheet":
             if st.button("🚀 Process & Sync Master Data"):
                 bulk_df.to_csv(PROD_FILE, index=False)
                 st.success("Master dataset processed successfully!")
-                st.rerun()
+                st.st.rerun()
     with tab2:
         with st.form("master_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
@@ -209,7 +208,7 @@ elif menu == "📦 1. MASTER SKU Sheet":
             if st.form_submit_button("Append Product Record") and p_code:
                 pd.DataFrame([[cat, p_code, name, p_code, color, size, brand, p_type, comp_code, qty, img_url]], columns=df_prod.columns).to_csv(PROD_FILE, mode='a', header=False, index=False)
                 st.success("New SKU configuration committed successfully!")
-                st.rerun()
+                st.st.rerun()
     st.dataframe(df_prod, use_container_width=True, hide_index=True)
 
 # ==================== 2. CHANEL SKU MAP SHEET ====================
@@ -226,7 +225,7 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
             if st.button("🚀 Sync Link Map Table"):
                 bulk_df.to_csv(MAP_FILE, index=False)
                 st.success("Mapping configuration linked successfully!")
-                st.rerun()
+                st.st.rerun()
     with tab2:
         with st.form("map_form", clear_on_submit=True):
             c_sku = st.text_input("Seller SKU listed on Channels").strip()
@@ -237,7 +236,7 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
             if st.form_submit_button("Commit Connection Link") and c_sku:
                 pd.DataFrame([[c_sku, m_sku, ch_name, pack_of, brand]], columns=df_map.columns).to_csv(MAP_FILE, mode='a', header=False, index=False)
                 st.success("Mapping connected successfully!")
-                st.rerun()
+                st.st.rerun()
     st.dataframe(df_map, use_container_width=True, hide_index=True)
 
 # ==================== 3. ADD INVENTORY SHEET ====================
@@ -251,7 +250,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
         if st.form_submit_button("Commit Fresh Inventory QTY") and p_code:
             pd.DataFrame([[current_time, p_code, add_qty]], columns=df_stock.columns).to_csv(STOCK_FILE, mode='a', header=False, index=False)
             st.success("Physical warehouse stock updated successfully!")
-            st.rerun()
+            st.st.rerun()
     st.dataframe(df_stock, use_container_width=True, hide_index=True)
 
 # ==================== 4. SALE DATA SHEET ====================
@@ -268,7 +267,7 @@ elif menu == "📤 4. SALE DATA Sheet":
             if st.button("🚀 Deduct Mapped Inventory levels"):
                 bulk_df.to_csv(SALES_FILE, index=False)
                 st.success("Order evaluation complete. Live inventory depleted cleanly!")
-                st.rerun()
+                st.st.rerun()
     with tab2:
         with st.form("sale_form", clear_on_submit=True):
             s_date = st.date_input("Invoice Date").strftime("%Y-%m-%d")
@@ -278,5 +277,5 @@ elif menu == "📤 4. SALE DATA Sheet":
             if st.form_submit_button("Commit Manual Sales Entry") and c_sku:
                 pd.DataFrame([[s_date, c_sku, brand, qty]], columns=df_sales.columns).to_csv(SALES_FILE, mode='a', header=False, index=False)
                 st.success("Sales entry recorded successfully!")
-                st.rerun()
+                st.st.rerun()
     st.dataframe(df_sales, use_container_width=True, hide_index=True)
