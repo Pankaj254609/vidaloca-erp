@@ -81,7 +81,8 @@ def get_actual_inventory(start_date=None, end_date=None):
         p_code = row['Product Code']
         if p_code in inward_stock: inward_stock[p_code] += row['Added QTY']
             
-    if not df_sa.empty && start_date && end_date:
+    # FIXED: Replaced '&&' with proper Python 'and' syntax
+    if not df_sa.empty and start_date and end_date:
         try:
             df_sa['Parsed_Date'] = pd.to_datetime(df_sa['Date']).dt.date
             df_sa = df_sa[(df_sa['Parsed_Date'] >= start_date) & (df_sa['Parsed_Date'] <= end_date)]
@@ -145,10 +146,8 @@ if menu == "📊 Live Dashboard":
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", brands)
     if selected_brand != "All": df_actual = df_actual[df_actual['Brand'] == selected_brand]
         
-    # --- UPDATED METRIC CARDS ---
     m_col1, m_col2, m_col3 = st.columns(3)
     with m_col1: 
-        # Total stock sum implementation as requested
         st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Total Inward Stock</div><div class="metric-value">{int(df_actual["Total Inward Stock"].sum())}</div></div>', unsafe_allow_html=True)
     with m_col2: 
         st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Sale QTY</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum())}</div></div>', unsafe_allow_html=True)
