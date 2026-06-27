@@ -121,6 +121,44 @@ def get_actual_inventory(start_date=None, end_date=None):
     df_p['Actual Balance Stock'] = balance_list
     return df_p
 
+# Function to calculate date-wise summary
+def get_datewise_summary(start_date, end_date):
+    df_p, df_m, df_sa, df_st = load_data()
+    
+    # 1. Process Date-wise Inward Stock
+    inward_by_date = {}
+    if not df_st.empty:
+        try:
+            df_st['Date_Only'] = pd.to_datetime(df_st['Date & Time']).dt.date
+            df_filtered_st = df_st[(df_st['Date_Only'] >= start_date) & (df_st['Date_Only'] <= end_date)]
+            grouped_st = df_filtered_st.groupby('Date_Only')['Added QTY'].sum().to_dict()
+            for d, q in grouped_st.items():
+                inward_by_date[d] = inward_by_date.get(d, 0) + q
+        except: pass
+
+    # 2. Process Date-wise Sales QTY
+    sales_by_date = {}
+    if not df_sa.empty:
+        try:
+            df_sa['Date_Only'] = pd.to_datetime(df_sa['Date']).dt.date
+            df_filtered_sa = df_sa[(df_sa['Date_Only'] >= start_date) & (df_sa['Date_Only'] <= end_date)]
+            grouped_sa = df_filtered_sa.groupby('Date_Only')['QTY'].sum().to_dict()
+            for d, q in grouped_sa.items():
+                sales_by_date[d] = sales_by_date.get(d, 0) + int(q)
+        except: pass
+
+    # Combine both datasets into a clean dataframe
+    all_dates = sorted(list(set(list(inward_by_date.keys()) + list(sales_by_date.keys()))))
+    summary_records = []
+    for d in all_dates:
+        summary_records.append({
+            "Date": d.strftime("%Y-%m-%d"),
+            "Total Inward QTY": inward_by_date.get(d, 0),
+            "Total Sales QTY": sales_by_date.get(d, 0)
+        })
+        
+    return pd.DataFrame(summary_records)
+
 # ---- Sidebar Configuration Panel ----
 st.sidebar.markdown("<h2 style='color:white; text-align:center;'>Vida Loca Hub</h2>", unsafe_allow_html=True)
 st.sidebar.write("---")
@@ -153,7 +191,15 @@ if menu == "📊 Live Dashboard":
     with m_col3: 
         st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
     
-    # GRAPH REMOVED FROM HERE
+    # 📅 --- NEW DATEWISE SUMMARY SECTION ---
+    st.write("---")
+    st.subheader("📅 Date-wise Stock & Sales Summary")
+    df_date_summary = get_datewise_summary(start_d, end_d)
+    if not df_date_summary.empty:
+        st.dataframe(df_date_summary, use_container_width=True, hide_index=True)
+    else:
+        st.info("No logs found for the selected date range.")
+
     st.write("---")
     st.subheader("📋 Inventory Ledger Table")
     st.dataframe(df_actual[["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "Total Inward Stock", "Total Sold QTY", "Actual Balance Stock"]], column_config={"Image URL": st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
