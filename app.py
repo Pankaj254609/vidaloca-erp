@@ -69,7 +69,10 @@ df_prod, df_map, df_sales, df_stock = load_data()
 
 def get_actual_inventory(start_date=None, end_date=None):
     df_p, df_m, df_sa, df_st = load_data()
-    inward_stock = df_p.set_index('Product Code')['QTY'].to_dict()
+    
+    # Track baseline Opening Quantity
+    opening_stock = df_p.set_index('Product Code')['QTY'].to_dict()
+    inward_stock = opening_stock.copy()
     
     if not df_st.empty and start_date and end_date:
         try:
@@ -107,13 +110,18 @@ def get_actual_inventory(start_date=None, end_date=None):
 
     balance_list = []
     total_sold_list = []
+    total_added_period_list = []
+    
     for _, row in df_p.iterrows():
         p_code = row['Product Code']
         total_in = inward_stock.get(p_code, 0)
         total_sold = sold_stock.get(p_code, 0)
+        
         balance_list.append(total_in - total_sold)
         total_sold_list.append(total_sold)
+        total_added_period_list.append(total_in - opening_stock.get(p_code, 0))
         
+    df_p['Period Added QTY'] = total_added_period_list
     df_p['Total Sold QTY'] = total_sold_list
     df_p['Actual Balance Stock'] = balance_list
     return df_p
@@ -138,17 +146,57 @@ if menu == "📊 Live Dashboard":
     
     df_actual = get_actual_inventory(start_date=start_d, end_date=end_d)
     
+    # Filters
     brands = ["All"] + list(df_actual['Brand'].dropna().unique())
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", brands)
-    if selected_brand != "All": df_actual = df_actual[df_actual['Brand'] == selected_brand]
-        
-    m_col1, m_col2, m_col3 = st.columns(3)
-    with m_col1: st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Unique Master SKUs</div><div class="metric-value">{len(df_actual)}</div></div>', unsafe_allow_html=True)
-    with m_col2: st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Units Sold</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum())}</div></div>', unsafe_allow_html=True)
-    with m_col3: st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Net Available Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
     
+    types = ["All"] + list(df_actual['Type'].dropna().unique())
+    selected_type = st.sidebar.selectbox("Filter by Stock Type", types)
+    
+    if selected_brand != "All": df_actual = df_actual[df_actual['Brand'] == selected_brand]
+    if selected_type != "All": df_actual = df_actual[df_actual['Type'] == selected_type]
+        
+    # Metrics Cards
+    m_col1, m_col2, m_col3 = st.columns(3)
+    t_added = int(df_actual["QTY"].sum() + df_actual["Period Added QTY"].sum())
+    t_sold = int(df_actual["Total Sold QTY"].sum())
+    t_bal = int(df_actual["Actual Balance Stock"].sum())
+    
+    with m_col1: st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Total Inward (Opening + Added)</div><div class="metric-value">{t_added}</div></div>', unsafe_allow_html=True)
+    with m_col2: st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Units Sold Out</div><div class="metric-value">{t_sold}</div></div>', unsafe_allow_html=True)
+    with m_col3: st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{t_bal}</div></div>', unsafe_allow_html=True)
+    
+    # --- GRAPH SECTION ---
     st.write("---")
-    st.dataframe(df_actual[["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "QTY", "Total Sold QTY", "Actual Balance Stock"]], column_config={"Image URL": st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
+    st.subheader("📈 Inventory Analytics Insights")
+    
+    g_col1, g_col2 = st.columns(2)
+    
+    with g_col1:
+        st.markdown("##### 📊 Overall Stock Breakdown Summary")
+        summary_df = pd.DataFrame({
+            "Metrics": ["Total Inward", "Total Sold", "Balance Stock"],
+            "Quantities": [t_added, t_sold, t_bal]
+        })
+        st.bar_chart(summary_df.set_index("Metrics"))
+        
+    with g_col2:
+        st.markdown("##### 🏷️ Design & Variant Wise Movement Matrix")
+        if not df_actual.empty:
+            # Prepare data summary grouped by product code
+            chart_data = df_actual.groupby("Product Code")[["Period Added QTY", "Total Sold QTY", "Actual Balance Stock"]].sum()
+            st.bar_chart(chart_data)
+        else:
+            st.write("No data matching current filter state.")
+
+    st.write("---")
+    st.subheader("📋 Real-time Multi-channel Inventory Ledger (With Image Filter View)")
+    st.dataframe(
+        df_actual[["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "QTY", "Total Sold QTY", "Actual Balance Stock"]], 
+        column_config={"Image URL": st.column_config.ImageColumn("Preview")}, 
+        use_container_width=True, 
+        hide_index=True
+    )
 
 # ==================== 1. MASTER SKU SHEET ====================
 elif menu == "📦 1. MASTER SKU Sheet":
@@ -196,7 +244,7 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
             st.rerun()
     st.dataframe(df_map, use_container_width=True, hide_index=True)
 
-# ==================== 3. ADD INVENTORY SHEET (NAME & COLOR SMART SELECT) ====================
+# ==================== 3. ADD INVENTORY SHEET ====================
 elif menu == "📥 3. ADD INVENTORY Sheet":
     st.markdown("<h1>📥 Stock Inward Ledger Panel</h1>", unsafe_allow_html=True)
     st.info("⏰ Note: This inward dashboard automatically resets and flushes out every day at 12:00 PM.")
@@ -204,16 +252,13 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
 
     inv_tab1, inv_tab2 = st.tabs(["📁 1. Bulk Inventory Upload (Excel/CSV)", "✍️ 2. Name & Color Matrix Entry"])
 
-    # --- TAB 1: BULK FILE UPLOAD ---
     with inv_tab1:
         st.subheader("Upload Multi-product Stock Inward File")
         uploaded_inv_file = st.file_uploader("Choose Excel or CSV manifest file", type=["xlsx", "csv"], key="bulk_inv_upload")
         if uploaded_inv_file is not None:
             bulk_inv_df = pd.read_csv(uploaded_inv_file) if uploaded_inv_file.name.endswith('.csv') else pd.read_excel(uploaded_inv_file)
-            if "Date & Time" not in bulk_inv_df.columns:
-                bulk_inv_df["Date & Time"] = current_time
-            else:
-                bulk_inv_df["Date & Time"] = bulk_inv_df["Date & Time"].fillna(current_time)
+            if "Date & Time" not in bulk_inv_df.columns: bulk_inv_df["Date & Time"] = current_time
+            else: bulk_inv_df["Date & Time"] = bulk_inv_df["Date & Time"].fillna(current_time)
             st.dataframe(bulk_inv_df.head(), hide_index=True)
             if st.button("🚀 Process Bulk Stock Load"):
                 final_bulk_inv = bulk_inv_df[["Date & Time", "Product Code", "Added QTY"]]
@@ -221,38 +266,28 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
                 st.success(f"Successfully processed {len(final_bulk_inv)} items into Live Stock!")
                 st.rerun()
 
-    # --- TAB 2: MANUAL ENTRY BY NAME & COLOR ---
     with inv_tab2:
-        # Step 1: Unique Names Selectbox
         unique_names = sorted(list(df_prod['Name'].dropna().unique())) if not df_prod.empty else []
         selected_name = st.selectbox("👗 Select Product Name / Description", unique_names, key="name_selector")
         
-        # Filter master sheet by selected name to find available colors
         filtered_by_name = df_prod[df_prod['Name'] == selected_name]
         available_colors = sorted(list(filtered_by_name['Color'].dropna().unique()))
-        
-        # Step 2: Colors Selectbox based on Name
         selected_color = st.selectbox("🎨 Select Color", available_colors, key="color_selector")
         
-        # Fetch metadata and Image URL matching Name + Color combination
         final_meta = filtered_by_name[filtered_by_name['Color'] == selected_color]
         
         if not final_meta.empty:
             st.write("---")
             col_img, col_det = st.columns([1, 4])
             img_val = final_meta['Image URL'].iloc[0]
-            if pd.notna(img_val) and str(img_val).strip() != "":
-                col_img.image(img_val, width=120)
+            if pd.notna(img_val) and str(img_val).strip() != "": col_img.image(img_val, width=120)
             col_det.write(f"**Selected Product:** {selected_name}  \n**Color Theme:** {selected_color}  \n**Brand:** {final_meta['Brand'].iloc[0]}")
             
-            # Extract basic code prefix used to map sizes behind the scenes
             base_code_sample = final_meta['Product Code'].iloc[0]
-            # Strip size if it contains suffix hyphens (e.g., 'A101-XL' becomes 'A101')
             base_design_prefix = base_code_sample.split('-')[0] if '-' in str(base_code_sample) else base_code_sample
             
             st.write("---")
             st.markdown("### 🔢 Fill Inventory Quantity Size-wise:")
-            
             size_cols = st.columns(7)
             q_xs = size_cols[0].number_input("XS QTY", min_value=0, value=0, step=1, key="xs")
             q_s  = size_cols[1].number_input("S QTY", min_value=0, value=0, step=1, key="s")
@@ -265,21 +300,14 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
             if st.button("🚀 Submit Multi-Size Batch Allocation"):
                 allocations = {"XS": q_xs, "S": q_s, "M": q_m, "L": q_l, "XL": q_xl, "XXL": q_2xl, "3XL": q_3xl}
                 added_entries = 0
-                
                 for sz, qty_input in allocations.items():
                     if qty_input > 0:
-                        # Constructing exact matching SKU string based on your master sheets structure
                         target_sku_variant = f"{base_design_prefix}-{sz}"
-                        
-                        # Add record directly to ledger log
                         pd.DataFrame([[current_time, target_sku_variant, qty_input]], columns=df_stock.columns).to_csv(STOCK_FILE, mode='a', header=False, index=False)
                         added_entries += 1
-                        
                 if added_entries > 0:
-                    st.success(f"Processed {added_entries} size updates into Live Inventory Database for {selected_name} ({selected_color})!")
+                    st.success("Processed size updates successfully!")
                     st.rerun()
-        else:
-            st.warning("No matching SKU found for this combination in Master Sheet.")
                 
     st.write("---")
     st.subheader("📋 Today's Inward Processing Log (Flushes at 12:00 PM)")
