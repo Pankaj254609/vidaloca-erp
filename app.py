@@ -69,6 +69,8 @@ df_prod, df_map, df_sales, df_stock = load_data()
 
 def get_actual_inventory(start_date=None, end_date=None):
     df_p, df_m, df_sa, df_st = load_data()
+    
+    # Base Inward calculation
     inward_stock = df_p.set_index('Product Code')['QTY'].to_dict()
     
     if not df_st.empty and start_date and end_date:
@@ -105,15 +107,18 @@ def get_actual_inventory(start_date=None, end_date=None):
         else:
             if c_sku in sold_stock: sold_stock[c_sku] += s_qty
 
+    total_in_list = []
     balance_list = []
     total_sold_list = []
     for _, row in df_p.iterrows():
         p_code = row['Product Code']
         total_in = inward_stock.get(p_code, 0)
         total_sold = sold_stock.get(p_code, 0)
+        total_in_list.append(total_in)
         balance_list.append(total_in - total_sold)
         total_sold_list.append(total_sold)
         
+    df_p['Total Inward Stock'] = total_in_list
     df_p['Total Sold QTY'] = total_sold_list
     df_p['Actual Balance Stock'] = balance_list
     return df_p
@@ -129,96 +134,37 @@ menu = st.sidebar.radio("📌 CONTROL PANEL:", [
     "📤 4. SALE DATA Sheet"
 ])
 
-# ==================== LIVE DASHBOARD (WITH CHARTS & IMAGE FILTERS) ====================
+# ==================== LIVE DASHBOARD ====================
 if menu == "📊 Live Dashboard":
     st.markdown("<h1 style='color:#0f172a;'>📊 OMS Core Dashboard</h1>", unsafe_allow_html=True)
-    
-    # 📅 Sidebar Date Filters
     today = date.today()
     start_d = st.sidebar.date_input("Start Date", date(today.year, 1, 1))
     end_d = st.sidebar.date_input("End Date", today)
     
     df_actual = get_actual_inventory(start_date=start_d, end_date=end_d)
     
-    # 👗 SIDEBAR PRODUCT & IMAGE FILTERS
-    st.sidebar.write("---")
-    st.sidebar.write("### 🎛️ Image & Product Filters")
-    
-    unique_names = ["All"] + sorted(list(df_actual['Name'].dropna().unique()))
-    selected_name = st.sidebar.selectbox("Filter by Product Name", unique_names)
-    
-    if selected_name != "All":
-        df_actual = df_actual[df_actual['Name'] == selected_name]
+    brands = ["All"] + list(df_actual['Brand'].dropna().unique())
+    selected_brand = st.sidebar.selectbox("Filter by Brand Name", brands)
+    if selected_brand != "All": df_actual = df_actual[df_actual['Brand'] == selected_brand]
         
-    available_colors = ["All"] + sorted(list(df_actual['Color'].dropna().unique()))
-    selected_color = st.sidebar.selectbox("Filter by Color", available_colors)
-    
-    if selected_color != "All":
-        df_actual = df_actual[df_actual['Color'] == selected_color]
-
-    # Display Product image dynamically in sidebar if uniquely filtered
-    if selected_name != "All" and selected_color != "All" and not df_actual.empty:
-        img_val = df_actual['Image URL'].iloc[0]
-        if pd.notna(img_val) and str(img_val).strip() != "":
-            st.sidebar.image(img_val, caption=f"{selected_name} ({selected_color})", use_container_width=True)
-
-    # 📈 Metric Cards
     m_col1, m_col2, m_col3 = st.columns(3)
-    with m_col1: st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Unique SKUs Displayed</div><div class="metric-value">{len(df_actual)}</div></div>', unsafe_allow_html=True)
-    with m_col2: st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Units Sold</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum())}</div></div>', unsafe_allow_html=True)
+    with m_col1: st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Unique Master SKUs</div><div class="metric-value">{len(df_actual)}</div></div>', unsafe_allow_html=True)
+    with m_col2: st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Units Sold</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum())}</div></div>', unsafe_allow_html=True)
     with m_col3: st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Net Available Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
     
-    # 📊 GRAPH 1: TOTAL SOLD VS BALANCE QTY (TOP CHART)
+    # 📈 NEW FEATURE: LIVE DATE-WISE BAR CHART GRAPH
     st.write("---")
-    st.subheader("📈 Stock Performance: Total Sold QTY vs Actual Balance Stock")
-    if not df_actual.empty:
-        chart_df = df_actual.set_index("Product Code")[["Total Sold QTY", "Actual Balance Stock"]]
-        st.bar_chart(chart_df, height=350)
-    else:
-        st.warning("No data available for the current filter selection.")
-
-    # 📅 GRAPH 2: DATE-WISE ADD INVENTORY VS SALES (BOTTOM CHART)
-    st.subheader("📅 Timeline Analytics: Date-wise Add Inventory vs Sales")
+    st.subheader("📈 Stock vs Sales Analytics Chart")
     
-    # Read fresh log sheets for time analysis
-    _, df_m, df_sa, df_st = load_data()
+    # Preparing summarized dataset for clean bar charts
+    chart_data = df_actual.groupby("Product Code")[["Total Inward Stock", "Total Sold QTY", "Actual Balance Stock"]].sum()
     
-    # Process Date-wise Add Inventory
-    if not df_st.empty:
-        df_st['Date'] = pd.to_datetime(df_st['Date & Time']).dt.strftime('%Y-%m-%d')
-        # Filter by selected product codes if filtered
-        if selected_name != "All" or selected_color != "All":
-            df_st = df_st[df_st['Product Code'].isin(df_actual['Product Code'])]
-        df_st_grouped = df_st.groupby('Date')['Added QTY'].sum().reset_index()
-    else:
-        df_st_grouped = pd.DataFrame(columns=['Date', 'Added QTY'])
-
-    # Process Date-wise Sales
-    if not df_sa.empty:
-        df_sa['Date'] = pd.to_datetime(df_sa['Date']).dt.strftime('%Y-%m-%d')
-        # Back-map Channel SKUs to check if they match our filtered set
-        if selected_name != "All" or selected_color != "All":
-            valid_channel_skus = df_m[df_m['SKU Code'].isin(df_actual['Product Code'])]['Seller SKU on Channel']
-            df_sa = df_sa[df_sa['Channel SKU'].isin(valid_channel_skus)]
-        df_sa_grouped = df_sa.groupby('Date')['QTY'].sum().reset_index().rename(columns={'QTY': 'Sold QTY'})
-    else:
-        df_sa_grouped = pd.DataFrame(columns=['Date', 'Sold QTY'])
-
-    # Merge timelines together to build the Line Chart
-    timeline_df = pd.merge(df_st_grouped, df_sa_grouped, on='Date', how='outer').fillna(0).set_index('Date').sort_index()
+    # Displaying the Bar Chart
+    st.bar_chart(chart_data)
     
-    # Filter timeline index by date picker range
-    if not timeline_df.empty:
-        timeline_df.index = pd.to_datetime(timeline_df.index).date
-        timeline_df = timeline_df[(timeline_df.index >= start_d) & (timeline_df.index <= end_d)]
-        st.line_chart(timeline_df, height=300)
-    else:
-        st.info("No transaction history available for the selected dates/products.")
-
-    # 📋 Live Ledger Table
     st.write("---")
-    st.subheader("📋 Filtered Inventory Ledger")
-    st.dataframe(df_actual[["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "QTY", "Total Sold QTY", "Actual Balance Stock"]], column_config={"Image URL": st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
+    st.subheader("📋 Real-time Multi-channel Inventory Ledger")
+    st.dataframe(df_actual[["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "Total Inward Stock", "Total Sold QTY", "Actual Balance Stock"]], column_config={"Image URL": st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
 
 # ==================== 1. MASTER SKU SHEET ====================
 elif menu == "📦 1. MASTER SKU Sheet":
@@ -332,10 +278,10 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
                         pd.DataFrame([[current_time, target_sku_variant, qty_input]], columns=df_stock.columns).to_csv(STOCK_FILE, mode='a', header=False, index=False)
                         added_entries += 1
                 if added_entries > 0:
-                    st.success(f"Processed {added_entries} size updates!")
+                    st.success(f"Processed {added_entries} size updates into Live Inventory Database!")
                     st.rerun()
         else:
-            st.warning("No matching SKU found.")
+            st.warning("No matching SKU found for this combination.")
                 
     st.write("---")
     st.subheader("📋 Today's Inward Processing Log (Flushes at 12:00 PM)")
