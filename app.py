@@ -196,78 +196,90 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
             st.rerun()
     st.dataframe(df_map, use_container_width=True, hide_index=True)
 
-# ==================== 3. ADD INVENTORY SHEET (WITH BULK + MATRIX MATRIX) ====================
+# ==================== 3. ADD INVENTORY SHEET (NAME & COLOR SMART SELECT) ====================
 elif menu == "📥 3. ADD INVENTORY Sheet":
     st.markdown("<h1>📥 Stock Inward Ledger Panel</h1>", unsafe_allow_html=True)
     st.info("⏰ Note: This inward dashboard automatically resets and flushes out every day at 12:00 PM.")
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Creating Dual Tabs for Bulk and Size-Wise Entry
-    inv_tab1, inv_tab2 = st.tabs(["📁 1. Bulk Inventory Upload (Excel/CSV)", "✍️ 2. Size-Matrix Entry"])
+    inv_tab1, inv_tab2 = st.tabs(["📁 1. Bulk Inventory Upload (Excel/CSV)", "✍️ 2. Name & Color Matrix Entry"])
 
     # --- TAB 1: BULK FILE UPLOAD ---
     with inv_tab1:
         st.subheader("Upload Multi-product Stock Inward File")
-        st.markdown("""
-        **Required File Columns Format:**  
-        `Date & Time` *(Optional)* | `Product Code` | `Added QTY`
-        """)
         uploaded_inv_file = st.file_uploader("Choose Excel or CSV manifest file", type=["xlsx", "csv"], key="bulk_inv_upload")
-        
         if uploaded_inv_file is not None:
             bulk_inv_df = pd.read_csv(uploaded_inv_file) if uploaded_inv_file.name.endswith('.csv') else pd.read_excel(uploaded_inv_file)
-            
-            # Auto fill missing timestamps safely
             if "Date & Time" not in bulk_inv_df.columns:
                 bulk_inv_df["Date & Time"] = current_time
             else:
                 bulk_inv_df["Date & Time"] = bulk_inv_df["Date & Time"].fillna(current_time)
-                
             st.dataframe(bulk_inv_df.head(), hide_index=True)
-            
             if st.button("🚀 Process Bulk Stock Load"):
-                # Clean up structure to match destination log
                 final_bulk_inv = bulk_inv_df[["Date & Time", "Product Code", "Added QTY"]]
                 final_bulk_inv.to_csv(STOCK_FILE, mode='a', header=False, index=False)
-                st.success(f"Successfully processed {len(final_bulk_inv)} line items into Live Stock!")
+                st.success(f"Successfully processed {len(final_bulk_inv)} items into Live Stock!")
                 st.rerun()
 
-    # --- TAB 2: MANUAL SIZE MATRIX ENTRY ---
+    # --- TAB 2: MANUAL ENTRY BY NAME & COLOR ---
     with inv_tab2:
-        unique_base_designs = sorted(list(df_prod['Product Code'].dropna().unique()))
-        selected_design = st.selectbox("🎯 Select base Product Code Model", unique_base_designs, key="design_selector")
+        # Step 1: Unique Names Selectbox
+        unique_names = sorted(list(df_prod['Name'].dropna().unique())) if not df_prod.empty else []
+        selected_name = st.selectbox("👗 Select Product Name / Description", unique_names, key="name_selector")
         
-        prod_meta = df_prod[df_prod['Product Code'] == selected_design]
-        if not prod_meta.empty:
+        # Filter master sheet by selected name to find available colors
+        filtered_by_name = df_prod[df_prod['Name'] == selected_name]
+        available_colors = sorted(list(filtered_by_name['Color'].dropna().unique()))
+        
+        # Step 2: Colors Selectbox based on Name
+        selected_color = st.selectbox("🎨 Select Color", available_colors, key="color_selector")
+        
+        # Fetch metadata and Image URL matching Name + Color combination
+        final_meta = filtered_by_name[filtered_by_name['Color'] == selected_color]
+        
+        if not final_meta.empty:
+            st.write("---")
             col_img, col_det = st.columns([1, 4])
-            img_val = prod_meta['Image URL'].iloc[0]
+            img_val = final_meta['Image URL'].iloc[0]
             if pd.notna(img_val) and str(img_val).strip() != "":
-                col_img.image(img_val, width=100)
-            col_det.write(f"**Name:** {prod_meta['Name'].iloc[0]} | **Color:** {prod_meta['Color'].iloc[0]} | **Brand:** {prod_meta['Brand'].iloc[0]}")
-        
-        st.write("---")
-        st.markdown("### 🔢 Fill Inventory Quantity Size-wise:")
-        
-        size_cols = st.columns(7)
-        q_xs = size_cols[0].number_input("XS QTY", min_value=0, value=0, step=1, key="xs")
-        q_s  = size_cols[1].number_input("S QTY", min_value=0, value=0, step=1, key="s")
-        q_m  = size_cols[2].number_input("M QTY", min_value=0, value=0, step=1, key="m")
-        q_l  = size_cols[3].number_input("L QTY", min_value=0, value=0, step=1, key="l")
-        q_xl = size_cols[4].number_input("XL QTY", min_value=0, value=0, step=1, key="xl")
-        q_2xl = size_cols[5].number_input("XXL QTY", min_value=0, value=0, step=1, key="xxl")
-        q_3xl = size_cols[6].number_input("3XL QTY", min_value=0, value=0, step=1, key="3xl")
-        
-        if st.button("🚀 Submit Multi-Size Batch Allocation"):
-            allocations = {"XS": q_xs, "S": q_s, "M": q_m, "L": q_l, "XL": q_xl, "XXL": q_2xl, "3XL": q_3xl}
-            added_entries = 0
-            for sz, qty_input in allocations.items():
-                if qty_input > 0:
-                    target_sku_variant = f"{selected_design}-{sz}" if "-" not in selected_design else selected_design
-                    pd.DataFrame([[current_time, target_sku_variant, qty_input]], columns=df_stock.columns).to_csv(STOCK_FILE, mode='a', header=False, index=False)
-                    added_entries += 1
-            if added_entries > 0:
-                st.success(f"Processed {added_entries} size updates into Live Inventory Database!")
-                st.rerun()
+                col_img.image(img_val, width=120)
+            col_det.write(f"**Selected Product:** {selected_name}  \n**Color Theme:** {selected_color}  \n**Brand:** {final_meta['Brand'].iloc[0]}")
+            
+            # Extract basic code prefix used to map sizes behind the scenes
+            base_code_sample = final_meta['Product Code'].iloc[0]
+            # Strip size if it contains suffix hyphens (e.g., 'A101-XL' becomes 'A101')
+            base_design_prefix = base_code_sample.split('-')[0] if '-' in str(base_code_sample) else base_code_sample
+            
+            st.write("---")
+            st.markdown("### 🔢 Fill Inventory Quantity Size-wise:")
+            
+            size_cols = st.columns(7)
+            q_xs = size_cols[0].number_input("XS QTY", min_value=0, value=0, step=1, key="xs")
+            q_s  = size_cols[1].number_input("S QTY", min_value=0, value=0, step=1, key="s")
+            q_m  = size_cols[2].number_input("M QTY", min_value=0, value=0, step=1, key="m")
+            q_l  = size_cols[3].number_input("L QTY", min_value=0, value=0, step=1, key="l")
+            q_xl = size_cols[4].number_input("XL QTY", min_value=0, value=0, step=1, key="xl")
+            q_2xl = size_cols[5].number_input("XXL QTY", min_value=0, value=0, step=1, key="xxl")
+            q_3xl = size_cols[6].number_input("3XL QTY", min_value=0, value=0, step=1, key="3xl")
+            
+            if st.button("🚀 Submit Multi-Size Batch Allocation"):
+                allocations = {"XS": q_xs, "S": q_s, "M": q_m, "L": q_l, "XL": q_xl, "XXL": q_2xl, "3XL": q_3xl}
+                added_entries = 0
+                
+                for sz, qty_input in allocations.items():
+                    if qty_input > 0:
+                        # Constructing exact matching SKU string based on your master sheets structure
+                        target_sku_variant = f"{base_design_prefix}-{sz}"
+                        
+                        # Add record directly to ledger log
+                        pd.DataFrame([[current_time, target_sku_variant, qty_input]], columns=df_stock.columns).to_csv(STOCK_FILE, mode='a', header=False, index=False)
+                        added_entries += 1
+                        
+                if added_entries > 0:
+                    st.success(f"Processed {added_entries} size updates into Live Inventory Database for {selected_name} ({selected_color})!")
+                    st.rerun()
+        else:
+            st.warning("No matching SKU found for this combination in Master Sheet.")
                 
     st.write("---")
     st.subheader("📋 Today's Inward Processing Log (Flushes at 12:00 PM)")
