@@ -41,7 +41,7 @@ def load_data():
     if not os.path.exists(MAP_FILE):
         pd.DataFrame(columns=["Seller SKU on Channel", "SKU Code", "channelName", "PACK OF", "BRAND"]).to_csv(MAP_FILE, index=False)
     if not os.path.exists(SALES_FILE):
-        pd.DataFrame(columns=["Date", "Channel SKU", "BRAND", "QTY"]).to_csv(SALES_FILE, index=False)
+        pd.DataFrame(columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"]).to_csv(SALES_FILE, index=False)
     if not os.path.exists(STOCK_FILE):
         pd.DataFrame(columns=["Date & Time", "Product Code", "Added QTY"]).to_csv(STOCK_FILE, index=False)
 
@@ -50,21 +50,21 @@ def load_data():
         df_p["Image URL"] = ""
         df_p.to_csv(PROD_FILE, index=False)
 
-    df_st = pd.read_csv(STOCK_FILE)
-    return pd.read_csv(PROD_FILE), pd.read_csv(MAP_FILE), pd.read_csv(SALES_FILE), df_st
+    return pd.read_csv(PROD_FILE), pd.read_csv(MAP_FILE), pd.read_csv(SALES_FILE), pd.read_csv(STOCK_FILE)
 
 df_prod, df_map, df_sales, df_stock = load_data()
 
 def get_actual_inventory(start_date=None, end_date=None, selected_brand="All"):
     df_p, df_m, df_sa, df_st = load_data()
     
-    # Filter master products by brand first if required
+    # 1. मास्टर प्रोडक्ट्स का बेस डेटा फ़िल्टर
     if selected_brand != "All":
         df_p = df_p[df_p['Brand'] == selected_brand]
         
     inward_stock = df_p.set_index('Product Code')['QTY'].to_dict()
+    sold_stock = {p_code: 0 for p_code in df_p['Product Code'].values}
     
-    # 1. Process Inward/Stock Additions
+    # 2. ADD INVENTORY (Inward Stock Calculation)
     if not df_st.empty and start_date and end_date:
         try:
             df_st['Parsed_Date'] = pd.to_datetime(df_st['Date & Time']).dt.date
@@ -76,55 +76,74 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All"):
         if p_code in inward_stock: 
             inward_stock[p_code] += row['Added QTY']
             
-    # 2. Process Sales Data with strict mapping logic
+    # 3. SALE DATA - EXACT SCRIPT MATCHING LOGIC
     if not df_sa.empty and start_date and end_date:
         try:
             df_sa['Parsed_Date'] = pd.to_datetime(df_sa['Date']).dt.date
             df_sa = df_sa[(df_sa['Parsed_Date'] >= start_date) & (df_sa['Parsed_Date'] <= end_date)]
         except: pass
 
-    sold_stock = {p_code: 0 for p_code in df_p['Product Code'].values}
-    
-    has_mapping_col = 'Seller SKU on Channel' in df_m.columns and 'SKU Code' in df_m.columns
+    # कॉलम चेक्स
+    has_m_scan = 'Scan Identifier' in df_p.columns and 'Component Product Code' in df_p.columns
+    has_map_cols = 'Seller SKU on Channel' in df_m.columns and 'SKU Code' in df_m.columns
     has_sales_sku = 'Channel SKU' in df_sa.columns
     has_sales_qty = 'QTY' in df_sa.columns
+    # स्क्रिप्ट की तरह 'Type' कॉलम चेक करें, अगर नहीं है तो डिफ़ॉल्ट 'SINGLE' मानेंगे
+    has_sales_type = 'Type' in df_sa.columns 
 
     if not df_sa.empty and has_sales_sku and has_sales_qty:
-        # Create a mapping dictionary for lightning fast and accurate lookup
-        map_dict = {}
-        if has_mapping_col:
+        # तेज़ी के लिए मैप शीट को डिक्शनरी में कन्वर्ट करें (Script: chanelData)
+        chanel_map = {}
+        if has_map_cols:
             for _, m_row in df_m.iterrows():
-                ch_sku = str(m_row['Seller SKU on Channel']).strip().upper()
-                sk_code = str(m_row['SKU Code']).strip().upper()
-                if ch_sku:
-                    map_dict[ch_sku] = sk_code
+                c_sku = str(m_row['Seller SKU on Channel']).strip().upper()
+                s_code = str(m_row['SKU Code']).strip().upper()
+                if c_sku: chanel_map[c_sku] = s_code
 
+        # सेल्स डेटा की लूप (Script: saleData Loop)
         for _, sale in df_sa.iterrows():
-            c_sku = str(sale['Channel SKU']).strip().upper()
+            sku_input = str(sale['Channel SKU']).strip().upper()
             s_qty = int(sale['QTY']) if pd.notna(sale['QTY']) else 0
-            
-            # Find the actual master SKU code from mapping or fallback to the channel SKU itself
-            target_sku = map_dict.get(c_sku, c_sku)
-            
-            # Check if this target matches directly or as a bundle component
-            if target_sku in sold_stock:
-                sold_stock[target_sku] += s_qty
-            else:
-                # If it's a component item inside a bundle or simple match verification
-                comp_matches = df_p[df_p['Component Product Code'] == target_sku]
-                if not comp_matches.empty:
-                    for _, comp_row in comp_matches.iterrows():
-                        c_code = comp_row['Product Code']
+            sale_type = str(sale['Type']).strip().upper() if has_sales_type and pd.notna(sale['Type']) else "SINGLE"
+
+            if not sku_input:
+                continue
+
+            # --- SCRIPT BUNDAL LOGIC ---
+            if sale_type == "BUNDAL" or sale_type == "BUNDLE":
+                if has_m_scan:
+                    # Master Sheet के Scan Identifier (Col D) से मैच करें और Component (Col I) निकालें
+                    matches = df_p[df_p['Scan Identifier'].str.strip().str.upper() == sku_input]
+                    # स्क्रिप्ट केवल पहले 2 मैच उठाती है
+                    match_count = 0
+                    for _, m_row in matches.iterrows():
+                        comp_sku = str(m_row['Component Product Code']).strip().upper()
+                        if comp_sku in sold_stock:
+                            sold_stock[comp_sku] += s_qty
+                        match_count += 1
+                        if match_count == 2: 
+                            break
+
+            # --- SCRIPT SINGLE LOGIC ---
+            elif sale_type == "SINGLE":
+                # Chanel Sheet से SKU Code (Col B) उठाएं
+                found_sku = chanel_map.get(sku_input, sku_input)
+                if found_sku in sold_stock:
+                    sold_stock[found_sku] += s_qty
+                else:
+                    # अगर सीधे नहीं मिला तो कॉम्पोनेंट चेक फ़ालबैक
+                    comp_matches = df_p[df_p['Component Product Code'] == found_sku]
+                    for _, c_row in comp_matches.iterrows():
+                        c_code = c_row['Product Code']
                         if c_code in sold_stock:
                             sold_stock[c_code] += s_qty
-                else:
-                    # Reverse verification: check if target_sku represents a bundle layout
-                    master_matches = df_p[df_p['Product Code'] == target_sku]
-                    for _, m_match in master_matches.iterrows():
-                        comp_sku = m_match['Component Product Code']
-                        if pd.notna(comp_sku) and comp_sku in sold_stock:
-                            sold_stock[comp_sku] += s_qty
 
+            # --- OTHERS / FALLBACK ---
+            else:
+                if sku_input in sold_stock:
+                    sold_stock[sku_input] += s_qty
+
+    # 4. फाइनल डेटासेट एग्रीगेशन
     balance_list = []
     total_sold_list = []
     total_inward_list = []
@@ -141,11 +160,11 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All"):
     df_p['Actual Balance Stock'] = balance_list
     return df_p
 
-# Function to calculate date-wise summary with Brand and Header Filters applied
+# Function to calculate date-wise summary
 def get_datewise_summary(start_date, end_date, selected_brand="All"):
+    df_actual = get_actual_inventory(start_date=start_date, end_date=end_date, selected_brand=selected_brand)
     df_p, df_m, df_sa, df_st = load_data()
     
-    # Filter master product set by selected brand header
     if selected_brand != "All":
         df_p = df_p[df_p['Brand'] == selected_brand]
     allowed_products = set(df_p['Product Code'].values)
@@ -155,41 +174,36 @@ def get_datewise_summary(start_date, end_date, selected_brand="All"):
         try:
             df_st['Date_Only'] = pd.to_datetime(df_st['Date & Time']).dt.date
             df_filtered_st = df_st[(df_st['Date_Only'] >= start_date) & (df_st['Date_Only'] <= end_date)]
-            
             for _, row in df_filtered_st.iterrows():
-                p_code = row['Product Code']
-                if p_code in allowed_products:
+                if row['Product Code'] in allowed_products:
                     d_only = row['Date_Only']
                     inward_by_date[d_only] = inward_by_date.get(d_only, 0) + row['Added QTY']
         except: pass
 
     sales_by_date = {}
-    has_sales_sku = 'Channel SKU' in df_sa.columns
-    has_sales_qty = 'QTY' in df_sa.columns
-    
-    if not df_sa.empty and has_sales_sku and has_sales_qty:
+    if not df_sa.empty and 'Channel SKU' in df_sa.columns and 'QTY' in df_sa.columns:
         try:
             df_sa['Date_Only'] = pd.to_datetime(df_sa['Date']).dt.date
             df_filtered_sa = df_sa[(df_sa['Date_Only'] >= start_date) & (df_sa['Date_Only'] <= end_date)]
             
-            # Map generation
-            map_dict = {}
+            chanel_map = {}
             if 'Seller SKU on Channel' in df_m.columns and 'SKU Code' in df_m.columns:
                 for _, m_row in df_m.iterrows():
-                    map_dict[str(m_row['Seller SKU on Channel']).strip().upper()] = str(m_row['SKU Code']).strip().upper()
+                    chanel_map[str(m_row['Seller SKU on Channel']).strip().upper()] = str(m_row['SKU Code']).strip().upper()
 
             for _, sale in df_filtered_sa.iterrows():
-                c_sku = str(sale['Channel SKU']).strip().upper()
+                sku_input = str(sale['Channel SKU']).strip().upper()
                 s_qty = int(sale['QTY']) if pd.notna(sale['QTY']) else 0
                 d_only = sale['Date_Only']
+                sale_type = str(sale['Type']).strip().upper() if 'Type' in sale else "SINGLE"
                 
-                target_sku = map_dict.get(c_sku, c_sku)
-                
-                # Check brand validity to perform exact filtered sum
-                is_valid = target_sku in allowed_products
-                if not is_valid:
-                    comp_check = df_p[df_p['Component Product Code'] == target_sku]
-                    if not comp_check.empty:
+                is_valid = False
+                if sale_type == "BUNDAL" or sale_type == "BUNDLE":
+                    matches = df_p[df_p['Scan Identifier'].str.strip().str.upper() == sku_input]
+                    if not matches.empty: is_valid = True
+                else:
+                    target = chanel_map.get(sku_input, sku_input)
+                    if target in allowed_products or not df_p[df_p['Component Product Code'] == target].empty:
                         is_valid = True
                         
                 if is_valid:
@@ -225,11 +239,9 @@ if menu == "📊 Live Dashboard":
     start_d = st.sidebar.date_input("Start Date", date(today.year, 1, 1))
     end_d = st.sidebar.date_input("End Date", today)
     
-    # Brand Name Header Filter
     all_brands = ["All"] + list(pd.read_csv(PROD_FILE)['Brand'].dropna().unique()) if os.path.exists(PROD_FILE) else ["All"]
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
     
-    # Fetch accurate calculated inventory
     df_actual = get_actual_inventory(start_date=start_d, end_date=end_d, selected_brand=selected_brand)
         
     m_col1, m_col2, m_col3 = st.columns(3)
