@@ -77,30 +77,33 @@ def get_actual_inventory(start_date=None, end_date=None):
 
     sold_stock = {p_code: 0 for p_code in df_p['Product Code'].values}
     
-    # SAFETY CHECK: Checking if required column exists in map file
+    # SAFETY CHECKS: Check column existence to avoid KeyErrors
     has_mapping_col = 'Seller SKU on Channel' in df_m.columns
+    has_sales_sku = 'Channel SKU' in df_sa.columns
+    has_sales_qty = 'QTY' in df_sa.columns
 
-    for _, sale in df_sa.iterrows():
-        c_sku = sale['Channel SKU']
-        s_qty = int(sale['QTY']) if pd.notna(sale['QTY']) else 0
-        
-        mapping = pd.DataFrame()
-        if has_mapping_col:
-            mapping = df_m[df_m['Seller SKU on Channel'] == c_sku]
+    if not df_sa.empty and has_sales_sku:
+        for _, sale in df_sa.iterrows():
+            c_sku = sale['Channel SKU']
+            s_qty = int(sale['QTY']) if (has_sales_qty and pd.notna(sale['QTY'])) else 0
             
-        if not mapping.empty:
-            for _, map_row in mapping.iterrows():
-                linked_sku = map_row['SKU Code'] if 'SKU Code' in map_row else None
-                if linked_sku:
-                    master_components = df_p[df_p['Product Code'] == linked_sku]
-                    if not master_components.empty:
-                        for _, comp_row in master_components.iterrows():
-                            comp_sku = comp_row['Component Product Code']
-                            if comp_sku in sold_stock: sold_stock[comp_sku] += s_qty
-                    else:
-                        if linked_sku in sold_stock: sold_stock[linked_sku] += s_qty
-        else:
-            if c_sku in sold_stock: sold_stock[c_sku] += s_qty
+            mapping = pd.DataFrame()
+            if has_mapping_col:
+                mapping = df_m[df_m['Seller SKU on Channel'] == c_sku]
+                
+            if not mapping.empty:
+                for _, map_row in mapping.iterrows():
+                    linked_sku = map_row['SKU Code'] if 'SKU Code' in map_row else None
+                    if linked_sku:
+                        master_components = df_p[df_p['Product Code'] == linked_sku]
+                        if not master_components.empty:
+                            for _, comp_row in master_components.iterrows():
+                                comp_sku = comp_row['Component Product Code']
+                                if comp_sku in sold_stock: sold_stock[comp_sku] += s_qty
+                        else:
+                            if linked_sku in sold_stock: sold_stock[linked_sku] += s_qty
+            else:
+                if c_sku in sold_stock: sold_stock[c_sku] += s_qty
 
     balance_list = []
     total_sold_list = []
@@ -133,7 +136,8 @@ def get_datewise_summary(start_date, end_date):
         except: pass
 
     sales_by_date = {}
-    if not df_sa.empty:
+    has_sales_qty = 'QTY' in df_sa.columns
+    if not df_sa.empty and has_sales_qty:
         try:
             df_sa['Date_Only'] = pd.to_datetime(df_sa['Date']).dt.date
             df_filtered_sa = df_sa[(df_sa['Date_Only'] >= start_date) & (df_sa['Date_Only'] <= end_date)]
