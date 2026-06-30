@@ -57,14 +57,14 @@ df_prod, df_map, df_sales, df_stock = load_data()
 def get_actual_inventory(start_date=None, end_date=None, selected_brand="All"):
     df_p, df_m, df_sa, df_st = load_data()
     
-    # 1. मास्टर प्रोडक्ट्स का बेस डेटा फ़िल्टर
+    # 1. बेस मास्टर डेटा फ़िल्टर (ब्रांड वाइज)
     if selected_brand != "All":
         df_p = df_p[df_p['Brand'] == selected_brand]
         
     inward_stock = df_p.set_index('Product Code')['QTY'].to_dict()
     sold_stock = {p_code: 0 for p_code in df_p['Product Code'].values}
     
-    # 2. ADD INVENTORY (Inward Stock Calculation)
+    # 2. ADD INVENTORY गणना (स्टॉक आवक)
     if not df_st.empty and start_date and end_date:
         try:
             df_st['Parsed_Date'] = pd.to_datetime(df_st['Date & Time']).dt.date
@@ -76,23 +76,24 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All"):
         if p_code in inward_stock: 
             inward_stock[p_code] += row['Added QTY']
             
-    # 3. SALE DATA - EXACT SCRIPT MATCHING LOGIC
+    # 3. SALE DATA गणना (आपकी स्क्रिप्ट के हुबहू लॉजिक पर आधारित)
     if not df_sa.empty and start_date and end_date:
         try:
             df_sa['Parsed_Date'] = pd.to_datetime(df_sa['Date']).dt.date
             df_sa = df_sa[(df_sa['Parsed_Date'] >= start_date) & (df_sa['Parsed_Date'] <= end_date)]
         except: pass
 
-    # कॉलम चेक्स
     has_m_scan = 'Scan Identifier' in df_p.columns and 'Component Product Code' in df_p.columns
     has_map_cols = 'Seller SKU on Channel' in df_m.columns and 'SKU Code' in df_m.columns
     has_sales_sku = 'Channel SKU' in df_sa.columns
     has_sales_qty = 'QTY' in df_sa.columns
-    # स्क्रिप्ट की तरह 'Type' कॉलम चेक करें, अगर नहीं है तो डिफ़ॉल्ट 'SINGLE' मानेंगे
     has_sales_type = 'Type' in df_sa.columns 
 
+    # ओरिजिनल मास्टर डेटा जिसमें फ़िल्टर न लगा हो ताकि रिवर्स मैपिंग सही हो सके
+    full_master = pd.read_csv(PROD_FILE)
+
     if not df_sa.empty and has_sales_sku and has_sales_qty:
-        # तेज़ी के लिए मैप शीट को डिक्शनरी में कन्वर्ट करें (Script: chanelData)
+        # मैपिंग डेटा को डिक्शनरी में लोड करें
         chanel_map = {}
         if has_map_cols:
             for _, m_row in df_m.iterrows():
@@ -100,7 +101,6 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All"):
                 s_code = str(m_row['SKU Code']).strip().upper()
                 if c_sku: chanel_map[c_sku] = s_code
 
-        # सेल्स डेटा की लूप (Script: saleData Loop)
         for _, sale in df_sa.iterrows():
             sku_input = str(sale['Channel SKU']).strip().upper()
             s_qty = int(sale['QTY']) if pd.notna(sale['QTY']) else 0
@@ -112,12 +112,12 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All"):
             # --- SCRIPT BUNDAL LOGIC ---
             if sale_type == "BUNDAL" or sale_type == "BUNDLE":
                 if has_m_scan:
-                    # Master Sheet के Scan Identifier (Col D) से मैच करें और Component (Col I) निकालें
-                    matches = df_p[df_p['Scan Identifier'].str.strip().str.upper() == sku_input]
-                    # स्क्रिप्ट केवल पहले 2 मैच उठाती है
+                    # Scan Identifier से मैच करके कॉम्पोनेंट खोजें
+                    matches = full_master[full_master['Scan Identifier'].str.strip().str.upper() == sku_input]
                     match_count = 0
                     for _, m_row in matches.iterrows():
                         comp_sku = str(m_row['Component Product Code']).strip().upper()
+                        # कॉम्पोनेंट वाले मेन Product Code में स्टॉक घटाएं/बिक्री जोड़ें
                         if comp_sku in sold_stock:
                             sold_stock[comp_sku] += s_qty
                         match_count += 1
@@ -125,25 +125,18 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All"):
                             break
 
             # --- SCRIPT SINGLE LOGIC ---
-            elif sale_type == "SINGLE":
-                # Chanel Sheet से SKU Code (Col B) उठाएं
+            else:
                 found_sku = chanel_map.get(sku_input, sku_input)
                 if found_sku in sold_stock:
                     sold_stock[found_sku] += s_qty
                 else:
-                    # अगर सीधे नहीं मिला तो कॉम्पोनेंट चेक फ़ालबैक
-                    comp_matches = df_p[df_p['Component Product Code'] == found_sku]
+                    # अगर चैनल एसकेयू सीधे नहीं मिलता, तो Component Code से रिवर्स मैच करें
+                    comp_matches = full_master[full_master['Component Product Code'].str.strip().str.upper() == found_sku]
                     for _, c_row in comp_matches.iterrows():
                         c_code = c_row['Product Code']
                         if c_code in sold_stock:
                             sold_stock[c_code] += s_qty
 
-            # --- OTHERS / FALLBACK ---
-            else:
-                if sku_input in sold_stock:
-                    sold_stock[sku_input] += s_qty
-
-    # 4. फाइनल डेटासेट एग्रीगेशन
     balance_list = []
     total_sold_list = []
     total_inward_list = []
@@ -160,11 +153,9 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All"):
     df_p['Actual Balance Stock'] = balance_list
     return df_p
 
-# Function to calculate date-wise summary
+# Date-wise Summary Function
 def get_datewise_summary(start_date, end_date, selected_brand="All"):
-    df_actual = get_actual_inventory(start_date=start_date, end_date=end_date, selected_brand=selected_brand)
     df_p, df_m, df_sa, df_st = load_data()
-    
     if selected_brand != "All":
         df_p = df_p[df_p['Brand'] == selected_brand]
     allowed_products = set(df_p['Product Code'].values)
@@ -218,10 +209,9 @@ def get_datewise_summary(start_date, end_date, selected_brand="All"):
             "Total Inward QTY": inward_by_date.get(d, 0),
             "Total Sales QTY": sales_by_date.get(d, 0)
         })
-        
     return pd.DataFrame(summary_records)
 
-# ---- Sidebar Configuration Panel ----
+# ---- Sidebar Panel ----
 st.sidebar.markdown("<h2 style='color:white; text-align:center;'>Vida Loca Hub</h2>", unsafe_allow_html=True)
 st.sidebar.write("---")
 menu = st.sidebar.radio("📌 CONTROL PANEL:", [
@@ -242,6 +232,7 @@ if menu == "📊 Live Dashboard":
     all_brands = ["All"] + list(pd.read_csv(PROD_FILE)['Brand'].dropna().unique()) if os.path.exists(PROD_FILE) else ["All"]
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
     
+    # कैलकुलेशन फंक्शन को कॉल करें
     df_actual = get_actual_inventory(start_date=start_d, end_date=end_d, selected_brand=selected_brand)
         
     m_col1, m_col2, m_col3 = st.columns(3)
