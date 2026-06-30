@@ -50,7 +50,10 @@ def load_data():
         df_p["Image URL"] = ""
         df_p.to_csv(PROD_FILE, index=False)
 
-    return pd.read_csv(PROD_FILE), pd.read_csv(MAP_FILE), pd.read_csv(SALES_FILE), pd.read_csv(STOCK_FILE)
+    return df_p, pd.read_csv(MAP_FILE), pd.read_csv(SALES_FILE), pd.read_csv(STOCK_FILE)
+
+# Global initial data load
+df_prod, df_map, df_sales, df_stock = load_data()
 
 # Helper function to find columns flexibly regardless of spelling/spaces/case
 def find_column(df, possible_names, default_name):
@@ -112,7 +115,7 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
             except: q = 0
             if p_code in inward_stock: inward_stock[p_code] += q
 
-    # 3. Process SALE DATA (Strict Script Replication)
+    # 3. Process SALE DATA
     sa_date_col = find_column(df_sa, ["Date", "Order Date", "Sale Date"], "Date")
     sa_sku_col = find_column(df_sa, ["Channel SKU", "SKU", "Seller SKU", "Item SKU"], "Channel SKU")
     sa_qty_col = find_column(df_sa, ["QTY", "Quantity", "Qty Sold"], "QTY")
@@ -125,7 +128,7 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
                 df_sa = df_sa[(df_sa['Parsed_Date'] >= start_date) & (df_sa['Parsed_Date'] <= end_date)]
         except: pass
 
-    # Channel SKU Map Matrix Map Table Load
+    # Channel SKU Map Matrix
     m_chan_col = find_column(df_m, ["Seller SKU on Channel", "Channel SKU", "Seller SKU"], "Seller SKU on Channel")
     m_master_col = find_column(df_m, ["SKU Code", "Master SKU"], "SKU Code")
     
@@ -152,7 +155,7 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
             if not sku_input:
                 continue
 
-            # --- BUNDAL LOGIC MATCH FROM SCRIPT ---
+            # --- BUNDAL LOGIC ---
             if sale_type in ["BUNDAL", "BUNDLE"]:
                 if fm_scan_col in full_master.columns and fm_comp_col in full_master.columns:
                     matches = full_master[full_master[fm_scan_col].astype(str).str.strip().str.upper() == sku_input]
@@ -163,7 +166,7 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
                             sold_stock[comp_sku] += s_qty
                         match_count += 1
                         if match_count == 2: break
-            # --- SINGLE LOGIC MATCH FROM SCRIPT ---
+            # --- SINGLE LOGIC ---
             else:
                 found_sku = chanel_map.get(sku_input, sku_input)
                 if found_sku in sold_stock:
@@ -194,7 +197,7 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
     df_p['Actual Balance Stock'] = balance_list
     return df_p
 
-# Date-wise Summary Function with Dynamic Filters
+# Date-wise Summary Function
 def get_datewise_summary(start_date, end_date, selected_brand="All", ignore_date=False):
     df_p, df_m, df_sa, df_st = load_data()
     p_code_col = find_column(df_p, ["Product Code", "Master SKU"], "Product Code")
@@ -276,7 +279,7 @@ def get_datewise_summary(start_date, end_date, selected_brand="All", ignore_date
         })
     return pd.DataFrame(summary_records)
 
-# ---- Sidebar Configuration Panel ----
+# ---- Sidebar Panel ----
 st.sidebar.markdown("<h2 style='color:white; text-align:center;'>Vida Loca Hub</h2>", unsafe_allow_html=True)
 st.sidebar.write("---")
 menu = st.sidebar.radio("📌 CONTROL PANEL:", [
@@ -287,6 +290,9 @@ menu = st.sidebar.radio("📌 CONTROL PANEL:", [
     "📤 4. SALE DATA Sheet"
 ])
 
+# Refresh initial variables inside loop to prevent missing reference
+df_prod, df_map, df_sales, df_stock = load_data()
+
 # ==================== LIVE DASHBOARD ====================
 if menu == "📊 Live Dashboard":
     st.markdown("<h1 style='color:#0f172a;'>📊 OMS Core Dashboard</h1>", unsafe_allow_html=True)
@@ -294,10 +300,9 @@ if menu == "📊 Live Dashboard":
     start_d = st.sidebar.date_input("Start Date", date(today.year, 1, 1))
     end_d = st.sidebar.date_input("End Date", today)
     
-    # 🌟 NEW EXTRA SAFETY CONTROLS
     ignore_date = st.sidebar.checkbox("Ignore Date Filter (Show All-Time Sales)", value=True)
     
-    all_brands = ["All"] + list(pd.read_csv(PROD_FILE)['Brand'].dropna().unique()) if os.path.exists(PROD_FILE) else ["All"]
+    all_brands = ["All"] + list(df_prod['Brand'].dropna().unique()) if not df_prod.empty else ["All"]
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
     
     df_actual = get_actual_inventory(start_date=start_d, end_date=end_d, selected_brand=selected_brand, ignore_date=ignore_date)
@@ -310,9 +315,6 @@ if menu == "📊 Live Dashboard":
     with m_col3: 
         st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
     
-    if df_actual["Total Sold QTY"].sum() == 0 and not df_sales.empty:
-        st.warning("💡 Tip: यदि बिक्री 0 दिख रही है, तो सुनिश्चित करें कि 'Ignore Date Filter' चालू हो, या फिर आपकी फ़ाइल में SKU के नंबर मैच कर रहे हों।")
-
     st.write("---")
     st.subheader("📅 Date-wise Stock & Sales Summary")
     df_date_summary = get_datewise_summary(start_d, end_d, selected_brand=selected_brand, ignore_date=ignore_date)
@@ -324,7 +326,6 @@ if menu == "📊 Live Dashboard":
     st.write("---")
     st.subheader("📋 Inventory Ledger Table")
     
-    # Safely select columns to render
     show_cols = []
     img_col = find_column(df_actual, ["Image URL", "Preview"], "Image URL")
     code_col = find_column(df_actual, ["Product Code", "Master SKU"], "Product Code")
