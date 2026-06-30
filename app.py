@@ -50,19 +50,8 @@ def load_data():
         df_p["Image URL"] = ""
         df_p.to_csv(PROD_FILE, index=False)
 
-    # ⏰ 12:00 PM AUTOMATIC DAILY RESET LOGIC
+    # REMOVED: 12:00 PM AUTOMATIC DAILY RESET LOGIC IS DELETED FROM HERE
     df_st = pd.read_csv(STOCK_FILE)
-    if not df_st.empty:
-        try:
-            now = datetime.now()
-            if now.time() >= time(12, 0):
-                last_entry_time = pd.to_datetime(df_st['Date & Time'].iloc[-1])
-                if last_entry_time.date() < now.date() or (last_entry_time.date() == now.date() and last_entry_time.time() < time(12, 0)):
-                    pd.DataFrame(columns=["Date & Time", "Product Code", "Added QTY"]).to_csv(STOCK_FILE, index=False)
-                    df_st = pd.read_csv(STOCK_FILE)
-        except:
-            pass
-
     return pd.read_csv(PROD_FILE), pd.read_csv(MAP_FILE), pd.read_csv(SALES_FILE), df_st
 
 df_prod, df_map, df_sales, df_stock = load_data()
@@ -125,7 +114,6 @@ def get_actual_inventory(start_date=None, end_date=None):
 def get_datewise_summary(start_date, end_date):
     df_p, df_m, df_sa, df_st = load_data()
     
-    # 1. Process Date-wise Inward Stock
     inward_by_date = {}
     if not df_st.empty:
         try:
@@ -136,7 +124,6 @@ def get_datewise_summary(start_date, end_date):
                 inward_by_date[d] = inward_by_date.get(d, 0) + q
         except: pass
 
-    # 2. Process Date-wise Sales QTY
     sales_by_date = {}
     if not df_sa.empty:
         try:
@@ -147,7 +134,6 @@ def get_datewise_summary(start_date, end_date):
                 sales_by_date[d] = sales_by_date.get(d, 0) + int(q)
         except: pass
 
-    # Combine both datasets into a clean dataframe
     all_dates = sorted(list(set(list(inward_by_date.keys()) + list(sales_by_date.keys()))))
     summary_records = []
     for d in all_dates:
@@ -191,7 +177,6 @@ if menu == "📊 Live Dashboard":
     with m_col3: 
         st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
     
-    # 📅 --- NEW DATEWISE SUMMARY SECTION ---
     st.write("---")
     st.subheader("📅 Date-wise Stock & Sales Summary")
     df_date_summary = get_datewise_summary(start_d, end_d)
@@ -253,7 +238,6 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
 # ==================== 3. ADD INVENTORY SHEET ====================
 elif menu == "📥 3. ADD INVENTORY Sheet":
     st.markdown("<h1>📥 Stock Inward Ledger Panel</h1>", unsafe_allow_html=True)
-    st.info("⏰ Note: This inward dashboard automatically resets and flushes out every day at 12:00 PM.")
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     inv_tab1, inv_tab2 = st.tabs(["📁 1. Bulk Inventory Upload (Excel/CSV)", "✍️ 2. Name & Color Matrix Entry"])
@@ -322,7 +306,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
             st.warning("No matching SKU found for this combination in Master Sheet.")
                 
     st.write("---")
-    st.subheader("📋 Today's Inward Processing Log (Flushes at 12:00 PM)")
+    st.subheader("📋 Total Inward Processing History Log")
     st.dataframe(df_stock, use_container_width=True, hide_index=True)
 
 # ==================== 4. SALE DATA SHEET ====================
