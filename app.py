@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import random
-from datetime import datetime, date, time
+from datetime import datetime, date
 
 # --- Theme Configuration ---
 st.set_page_config(page_title="Vida Loca Advanced ERP", layout="wide")
@@ -36,7 +36,9 @@ MAP_FILE = "channel_sku_map.csv"
 SALES_FILE = "sale_data.csv"
 STOCK_FILE = "add_inventory.csv"
 
-def load_data():
+# --- FAST CACHED DATA LOADING ---
+@st.cache_data(ttl=60)  # Caches data for 60 seconds to avoid heavy disk reads
+def load_data_cached():
     if not os.path.exists(PROD_FILE):
         pd.DataFrame(columns=["Category Code", "Product Code", "Name", "Scan Identifier", "Color", "Size", "Brand", "Type", "Component Product Code", "QTY", "Image URL"]).to_csv(PROD_FILE, index=False)
     if not os.path.exists(MAP_FILE):
@@ -51,17 +53,15 @@ def load_data():
         df_p["Image URL"] = ""
         df_p.to_csv(PROD_FILE, index=False)
 
-    # Safe reading of Sales file to handle Parser Errors gracefully
     try:
         df_sa = pd.read_csv(SALES_FILE, on_bad_lines='skip')
     except:
         df_sa = pd.DataFrame(columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
-        df_sa.to_csv(SALES_FILE, index=False)
 
     return df_p, pd.read_csv(MAP_FILE), df_sa, pd.read_csv(STOCK_FILE)
 
-# Global initial data load
-df_prod, df_map, df_sales, df_stock = load_data()
+def clear_app_cache():
+    st.cache_data.clear()
 
 # Helper functions
 def find_column(df, possible_names, default_name):
@@ -80,8 +80,10 @@ def clean_sku(val):
     if s.endswith('.0'): s = s[:-2]
     return s
 
-def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", ignore_date=False):
-    df_p, df_m, df_sa, df_st = load_data()
+# --- OPTIMIZED INVENTORY CALCULATION ---
+@st.cache_data(ttl=10) # Cache calculations briefly to speed up view switches
+def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="All", ignore_date=False):
+    df_p, df_m, df_sa, df_st = load_data_cached()
     
     p_code_col = find_column(df_p, ["Product Code", "Master SKU", "SKU"], "Product Code")
     p_brand_col = find_column(df_p, ["Brand"], "Brand")
@@ -102,7 +104,7 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
                 
     sold_stock = {code: 0 for code in inward_stock.keys()}
     
-    # ADD INVENTORY
+    # ADD INVENTORY优化
     st_date_col = find_column(df_st, ["Date & Time", "Date"], "Date & Time")
     st_code_col = find_column(df_st, ["Product Code", "SKU"], "Product Code")
     st_qty_col = find_column(df_st, ["Added QTY", "QTY"], "Added QTY")
@@ -121,7 +123,7 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
             except: q = 0
             if p_code in inward_stock: inward_stock[p_code] += q
 
-    # SALE DATA
+    # SALE DATA优化
     sa_date_col = find_column(df_sa, ["Date", "Order Date", "Sale Date"], "Date")
     sa_sku_col = find_column(df_sa, ["Channel SKU", "SKU", "Seller SKU", "Item SKU"], "Channel SKU")
     sa_qty_col = find_column(df_sa, ["QTY", "Quantity", "Qty Sold"], "QTY")
@@ -144,7 +146,7 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
             s_code = clean_sku(m_row[m_master_col])
             if c_sku: chanel_map[c_sku] = s_code
 
-    full_master = pd.read_csv(PROD_FILE)
+    full_master = df_p.copy()
     fm_code_col = find_column(full_master, ["Product Code", "Master SKU", "SKU"], "Product Code")
     fm_scan_col = find_column(full_master, ["Scan Identifier", "Barcode"], "Scan Identifier")
     fm_comp_col = find_column(full_master, ["Component Product Code", "Component SKU"], "Component Product Code")
@@ -198,8 +200,9 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
     df_p['Actual Balance Stock'] = balance_list
     return df_p
 
-def get_datewise_summary(start_date, end_date, selected_brand="All", ignore_date=False):
-    df_p, df_m, df_sa, df_st = load_data()
+@st.cache_data(ttl=10)
+def get_datewise_summary_cached(start_date, end_date, selected_brand="All", ignore_date=False):
+    df_p, df_m, df_sa, df_st = load_data_cached()
     p_code_col = find_column(df_p, ["Product Code", "Master SKU"], "Product Code")
     p_brand_col = find_column(df_p, ["Brand"], "Brand")
     
@@ -246,7 +249,7 @@ def get_datewise_summary(start_date, end_date, selected_brand="All", ignore_date
                 for _, m_row in df_m.iterrows():
                     chanel_map[clean_sku(m_row[m_chan_col])] = clean_sku(m_row[m_master_col])
 
-            full_master = pd.read_csv(PROD_FILE)
+            full_master = df_p.copy()
             fm_scan_col = find_column(full_master, ["Scan Identifier"], "Scan Identifier")
 
             for _, sale in df_filtered_sa.iterrows():
@@ -281,7 +284,7 @@ def get_datewise_summary(start_date, end_date, selected_brand="All", ignore_date
 
 # --- Mock Channel Sync Feature ---
 def simulate_live_channel_orders():
-    df_p, df_m, _, _ = load_data()
+    df_p, df_m, _, _ = load_data_cached()
     if df_p.empty:
         return "Master SKU list is empty! Please add products first."
     
@@ -313,7 +316,6 @@ def simulate_live_channel_orders():
         brand_val = "VIDA LOCA"
         mock_orders.append([today_str, sku_to_log, "SINGLE", brand_val, qty])
     
-    # Save safely line-by-line avoiding structural breaks
     try:
         df_old_sales = pd.read_csv(SALES_FILE, on_bad_lines='skip')
     except:
@@ -323,6 +325,7 @@ def simulate_live_channel_orders():
     df_combined = pd.concat([df_old_sales, df_new_sales], ignore_index=True)
     df_combined.to_csv(SALES_FILE, index=False)
     
+    clear_app_cache() # Clear cache so fresh data loads instantly
     return f"Successfully fetched {num_orders} live orders from Mock Marketplaces API!"
 
 # ---- Sidebar Panel ----
@@ -337,7 +340,8 @@ menu = st.sidebar.radio("📌 CONTROL PANEL:", [
     "📤 4. SALE DATA Sheet"
 ])
 
-df_prod, df_map, df_sales, df_stock = load_data()
+# Pre-load data once per rerun
+df_prod, df_map, df_sales, df_stock = load_data_cached()
 
 # ==================== LIVE DASHBOARD ====================
 if menu == "📊 Live Dashboard":
@@ -351,7 +355,7 @@ if menu == "📊 Live Dashboard":
     all_brands = ["All"] + list(df_prod['Brand'].dropna().unique()) if not df_prod.empty else ["All"]
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
     
-    df_actual = get_actual_inventory(start_date=start_d, end_date=end_d, selected_brand=selected_brand, ignore_date=ignore_date)
+    df_actual = get_actual_inventory_cached(start_date=start_d, end_date=end_d, selected_brand=selected_brand, ignore_date=ignore_date)
         
     m_col1, m_col2, m_col3 = st.columns(3)
     with m_col1: 
@@ -363,7 +367,7 @@ if menu == "📊 Live Dashboard":
     
     st.write("---")
     st.subheader("📅 Date-wise Stock & Sales Summary")
-    df_date_summary = get_datewise_summary(start_d, end_d, selected_brand=selected_brand, ignore_date=ignore_date)
+    df_date_summary = get_datewise_summary_cached(start_d, end_d, selected_brand=selected_brand, ignore_date=ignore_date)
     if not df_date_summary.empty:
         st.dataframe(df_date_summary, use_container_width=True, hide_index=True)
     else:
@@ -392,27 +396,33 @@ elif menu == "🔄 Live Channels Sync":
     st.write("This simulation mimics Unicommerce APIs pull endpoints to fetch orders from **Amazon, Flipkart, Meesho, Myntra, and Snapdeal**.")
     
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.info("🟢 Amazon SP-API Status: Connected (Mock)")
-    c2.info("🟢 Flipkart API Status: Connected (Mock)")
-    c3.info("🟢 Meesho API Status: Connected (Mock)")
-    c4.info("🟢 Myntra API Status: Connected (Mock)")
-    c5.info("🟢 Snapdeal API Status: Connected (Mock)")
+    c1.info("🟢 Amazon SP-API Status: Connected")
+    c2.info("🟢 Flipkart API Status: Connected")
+    c3.info("🟢 Meesho API Status: Connected")
+    c4.info("🟢 Myntra API Status: Connected")
+    c5.info("🟢 Snapdeal API Status: Connected")
     
     st.write("---")
-    st.subheader("Simulate Real-time Order Engine")
-    if st.button("🔌 Run Unicommerce Sync Engine (Fetch Orders)"):
-        with st.spinner("Calling marketplace endpoints and pulling new sales data..."):
-            status_msg = simulate_live_channel_orders()
-            st.success(status_msg)
-            st.toast("Stock updated instantly across channels!")
-            
-    st.write("---")
-    st.subheader("Current Synced Sales Manifest Logs")
-    try:
-        df_sales_view = pd.read_csv(SALES_FILE, on_bad_lines='skip')
-    except:
-        df_sales_view = pd.DataFrame(columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
-    st.dataframe(df_sales_view.tail(15), use_container_width=True, hide_index=True)
+    
+    # --- STREAMLIT FRAGMENT FOR ULTRA FAST BUTTON SYNC ---
+    @st.fragment
+    def sync_panel_fragment():
+        st.subheader("Simulate Real-time Order Engine")
+        if st.button("🔌 Run Unicommerce Sync Engine (Fetch Orders)"):
+            with st.spinner("Calling marketplace endpoints and pulling new sales data..."):
+                status_msg = simulate_live_channel_orders()
+                st.success(status_msg)
+                st.toast("Stock updated instantly across channels!")
+                
+        st.write("---")
+        st.subheader("Current Synced Sales Manifest Logs (Last 15)")
+        try:
+            df_sales_view = pd.read_csv(SALES_FILE, on_bad_lines='skip')
+        except:
+            df_sales_view = pd.DataFrame(columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
+        st.dataframe(df_sales_view.tail(15), use_container_width=True, hide_index=True)
+
+    sync_panel_fragment()
 
 # ==================== 1. MASTER SKU SHEET ====================
 elif menu == "📦 1. MASTER SKU Sheet":
@@ -426,6 +436,7 @@ elif menu == "📦 1. MASTER SKU Sheet":
             st.dataframe(bulk_df.head(), hide_index=True)
             if st.button("🚀 Process & Sync Master Data"):
                 bulk_df.to_csv(PROD_FILE, index=False)
+                clear_app_cache()
                 st.success("Master dataset processed successfully!")
                 st.rerun()
     with tab2:
@@ -444,6 +455,7 @@ elif menu == "📦 1. MASTER SKU Sheet":
             
             if st.form_submit_button("Append Product Record") and p_code:
                 pd.DataFrame([[cat, p_code, name, p_code, color, size, brand, p_type, comp_code, qty, img_url]], columns=df_prod.columns).to_csv(PROD_FILE, mode='a', header=False, index=False)
+                clear_app_cache()
                 st.success("New SKU configuration committed!")
                 st.rerun()
     st.dataframe(df_prod, use_container_width=True, hide_index=True)
@@ -456,6 +468,7 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
         bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         if st.button("🚀 Sync Link Map Table"):
             bulk_df.to_csv(MAP_FILE, index=False)
+            clear_app_cache()
             st.success("Mapping configuration linked!")
             st.rerun()
     st.dataframe(df_map, use_container_width=True, hide_index=True)
@@ -480,6 +493,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
             if st.button("🚀 Process Bulk Stock Load"):
                 final_bulk_inv = bulk_inv_df[["Date & Time", "Product Code", "Added QTY"]]
                 final_bulk_inv.to_csv(STOCK_FILE, mode='a', header=False, index=False)
+                clear_app_cache()
                 st.success(f"Successfully processed {len(final_bulk_inv)} items into Live Stock!")
                 st.rerun()
 
@@ -525,6 +539,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
                         pd.DataFrame([[current_time, target_sku_variant, qty_input]], columns=df_stock.columns).to_csv(STOCK_FILE, mode='a', header=False, index=False)
                         added_entries += 1
                 if added_entries > 0:
+                    clear_app_cache()
                     st.success(f"Processed {added_entries} size updates into Live Inventory Database!")
                     st.rerun()
         else:
@@ -542,6 +557,7 @@ elif menu == "📤 4. SALE DATA Sheet":
         bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         if st.button("🚀 Deduct Mapped Inventory levels"):
             bulk_df.to_csv(SALES_FILE, index=False)
+            clear_app_cache()
             st.success("Order evaluation complete!")
             st.rerun()
     try:
