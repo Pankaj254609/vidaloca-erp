@@ -281,36 +281,33 @@ def simulate_live_channel_orders():
     channels = ["AMAZON", "FLIPKART", "MEESHO", "MYNTRA", "SNAPDEAL"]
     mock_orders = []
     
-    # Pick a few random SKUs to generate mock sales
-    available_skus = df_p["Product Code"].dropna().tolist()
+    p_code_col = find_column(df_p, ["Product Code", "Master SKU", "SKU"], "Product Code")
+    available_skus = df_p[p_code_col].dropna().tolist() if p_code_col in df_p.columns else []
     if not available_skus:
         return "No Product Codes available to simulate."
         
-    num_orders = random.randint(2, 5) # Generate 2 to 5 random orders
+    num_orders = random.randint(2, 5)
     today_str = datetime.now().strftime("%Y-%m-%d")
     
+    m_master_col = find_column(df_m, ["SKU Code", "Master SKU"], "SKU Code")
+    m_chan_col = find_column(df_m, ["Seller SKU on Channel", "Channel SKU", "Seller SKU"], "Seller SKU on Channel")
+
     for _ in range(num_orders):
         chosen_sku = random.choice(available_skus)
-        # Randomly choose if it's mapped channel SKU or master SKU directly
-        if not df_m.empty and random.random() > 0.4:
-            # check if we can pick an existing channel mapping
-            mapped_options = df_m[df_m["SKU Code"].astype(str).str.upper() == chosen_sku.upper()]
+        
+        if not df_m.empty and m_master_col in df_m.columns and m_chan_col in df_m.columns and random.random() > 0.4:
+            mapped_options = df_m[df_m[m_master_col].astype(str).str.upper() == str(chosen_sku).upper()]
             if not mapped_options.empty:
-                sku_to_log = random.choice(mapped_options["Seller SKU on Channel"].tolist())
-                channel = random.choice(channels)
+                sku_to_log = random.choice(mapped_options[m_chan_col].tolist())
             else:
                 sku_to_log = chosen_sku
-                channel = random.choice(channels)
         else:
             sku_to_log = chosen_sku
-            channel = random.choice(channels)
             
         qty = random.randint(1, 3)
         brand_val = "VIDA LOCA"
-        
         mock_orders.append([today_str, sku_to_log, "SINGLE", brand_val, qty])
     
-    # Save to sales log
     df_new_sales = pd.DataFrame(mock_orders, columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
     df_new_sales.to_csv(SALES_FILE, mode='a', header=False, index=False)
     return f"Successfully fetched {num_orders} live orders from Mock Marketplaces API!"
