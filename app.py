@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import random
 from datetime import datetime, date, time
 
 # --- Theme Configuration ---
@@ -55,7 +56,7 @@ def load_data():
 # Global initial data load
 df_prod, df_map, df_sales, df_stock = load_data()
 
-# Helper function to find columns flexibly regardless of spelling/spaces/case
+# Helper functions
 def find_column(df, possible_names, default_name):
     for col in df.columns:
         if str(col).strip().lower() in [p.lower() for p in possible_names]:
@@ -66,7 +67,6 @@ def find_column(df, possible_names, default_name):
                 return col
     return default_name
 
-# Helper to clean float SKUs like 12345.0 to text 12345
 def clean_sku(val):
     if pd.isna(val): return ""
     s = str(val).strip().upper()
@@ -76,7 +76,6 @@ def clean_sku(val):
 def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", ignore_date=False):
     df_p, df_m, df_sa, df_st = load_data()
     
-    # 1. Master SKU Columns Mapping
     p_code_col = find_column(df_p, ["Product Code", "Master SKU", "SKU"], "Product Code")
     p_brand_col = find_column(df_p, ["Brand"], "Brand")
     p_qty_col = find_column(df_p, ["QTY", "Opening Quantity"], "QTY")
@@ -96,7 +95,7 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
                 
     sold_stock = {code: 0 for code in inward_stock.keys()}
     
-    # 2. Process ADD INVENTORY
+    # ADD INVENTORY
     st_date_col = find_column(df_st, ["Date & Time", "Date"], "Date & Time")
     st_code_col = find_column(df_st, ["Product Code", "SKU"], "Product Code")
     st_qty_col = find_column(df_st, ["Added QTY", "QTY"], "Added QTY")
@@ -115,7 +114,7 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
             except: q = 0
             if p_code in inward_stock: inward_stock[p_code] += q
 
-    # 3. Process SALE DATA
+    # SALE DATA
     sa_date_col = find_column(df_sa, ["Date", "Order Date", "Sale Date"], "Date")
     sa_sku_col = find_column(df_sa, ["Channel SKU", "SKU", "Seller SKU", "Item SKU"], "Channel SKU")
     sa_qty_col = find_column(df_sa, ["QTY", "Quantity", "Qty Sold"], "QTY")
@@ -128,7 +127,6 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
                 df_sa = df_sa[(df_sa['Parsed_Date'] >= start_date) & (df_sa['Parsed_Date'] <= end_date)]
         except: pass
 
-    # Channel SKU Map Matrix
     m_chan_col = find_column(df_m, ["Seller SKU on Channel", "Channel SKU", "Seller SKU"], "Seller SKU on Channel")
     m_master_col = find_column(df_m, ["SKU Code", "Master SKU"], "SKU Code")
     
@@ -152,21 +150,17 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
             
             sale_type = str(sale[sa_type_col]).strip().upper() if sa_type_col in df_sa.columns and pd.notna(sale[sa_type_col]) else "SINGLE"
 
-            if not sku_input:
-                continue
+            if not sku_input: continue
 
-            # --- BUNDAL LOGIC ---
             if sale_type in ["BUNDAL", "BUNDLE"]:
                 if fm_scan_col in full_master.columns and fm_comp_col in full_master.columns:
                     matches = full_master[full_master[fm_scan_col].astype(str).str.strip().str.upper() == sku_input]
                     match_count = 0
                     for _, m_row in matches.iterrows():
                         comp_sku = clean_sku(m_row[fm_comp_col])
-                        if comp_sku in sold_stock:
-                            sold_stock[comp_sku] += s_qty
+                        if comp_sku in sold_stock: sold_stock[comp_sku] += s_qty
                         match_count += 1
                         if match_count == 2: break
-            # --- SINGLE LOGIC ---
             else:
                 found_sku = chanel_map.get(sku_input, sku_input)
                 if found_sku in sold_stock:
@@ -197,7 +191,6 @@ def get_actual_inventory(start_date=None, end_date=None, selected_brand="All", i
     df_p['Actual Balance Stock'] = balance_list
     return df_p
 
-# Date-wise Summary Function
 def get_datewise_summary(start_date, end_date, selected_brand="All", ignore_date=False):
     df_p, df_m, df_sa, df_st = load_data()
     p_code_col = find_column(df_p, ["Product Code", "Master SKU"], "Product Code")
@@ -279,18 +272,61 @@ def get_datewise_summary(start_date, end_date, selected_brand="All", ignore_date
         })
     return pd.DataFrame(summary_records)
 
+# --- Mock Channel Sync Feature ---
+def simulate_live_channel_orders():
+    df_p, df_m, _, _ = load_data()
+    if df_p.empty:
+        return "Master SKU list is empty! Please add products first."
+    
+    channels = ["AMAZON", "FLIPKART", "MEESHO", "MYNTRA", "SNAPDEAL"]
+    mock_orders = []
+    
+    # Pick a few random SKUs to generate mock sales
+    available_skus = df_p["Product Code"].dropna().tolist()
+    if not available_skus:
+        return "No Product Codes available to simulate."
+        
+    num_orders = random.randint(2, 5) # Generate 2 to 5 random orders
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    for _ in range(num_orders):
+        chosen_sku = random.choice(available_skus)
+        # Randomly choose if it's mapped channel SKU or master SKU directly
+        if not df_m.empty and random.random() > 0.4:
+            # check if we can pick an existing channel mapping
+            mapped_options = df_m[df_m["SKU Code"].astype(str).str.upper() == chosen_sku.upper()]
+            if not mapped_options.empty:
+                sku_to_log = random.choice(mapped_options["Seller SKU on Channel"].tolist())
+                channel = random.choice(channels)
+            else:
+                sku_to_log = chosen_sku
+                channel = random.choice(channels)
+        else:
+            sku_to_log = chosen_sku
+            channel = random.choice(channels)
+            
+        qty = random.randint(1, 3)
+        brand_val = "VIDA LOCA"
+        
+        mock_orders.append([today_str, sku_to_log, "SINGLE", brand_val, qty])
+    
+    # Save to sales log
+    df_new_sales = pd.DataFrame(mock_orders, columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
+    df_new_sales.to_csv(SALES_FILE, mode='a', header=False, index=False)
+    return f"Successfully fetched {num_orders} live orders from Mock Marketplaces API!"
+
 # ---- Sidebar Panel ----
 st.sidebar.markdown("<h2 style='color:white; text-align:center;'>Vida Loca Hub</h2>", unsafe_allow_html=True)
 st.sidebar.write("---")
 menu = st.sidebar.radio("📌 CONTROL PANEL:", [
     "📊 Live Dashboard", 
+    "🔄 Live Channels Sync",
     "📦 1. MASTER SKU Sheet", 
     "🔗 2. CHANEL SKU MAP Sheet",
     "📥 3. ADD INVENTORY Sheet", 
     "📤 4. SALE DATA Sheet"
 ])
 
-# Refresh initial variables inside loop to prevent missing reference
 df_prod, df_map, df_sales, df_stock = load_data()
 
 # ==================== LIVE DASHBOARD ====================
@@ -339,6 +375,31 @@ if menu == "📊 Live Dashboard":
         if c in df_actual.columns: show_cols.append(c)
             
     st.dataframe(df_actual[show_cols], column_config={img_col: st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
+
+# ==================== LIVE CHANNELS SYNC (MOCK UNICOMMERCE) ====================
+elif menu == "🔄 Live Channels Sync":
+    st.markdown("<h1>🔄 Live Channel Marketplace Integrations</h1>", unsafe_allow_html=True)
+    st.write("This simulation mimics Unicommerce APIs pull endpoints to fetch orders from **Amazon, Flipkart, Meesho, Myntra, and Snapdeal**.")
+    
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.info("🟢 Amazon SP-API Status: Connected (Mock)")
+    c2.info("🟢 Flipkart API Status: Connected (Mock)")
+    c3.info("🟢 Meesho API Status: Connected (Mock)")
+    c4.info("🟢 Myntra API Status: Connected (Mock)")
+    c5.info("🟢 Snapdeal API Status: Connected (Mock)")
+    
+    st.write("---")
+    st.subheader("Simulate Real-time Order Engine")
+    if st.button("🔌 Run Unicommerce Sync Engine (Fetch Orders)"):
+        with st.spinner("Calling marketplace endpoints and pulling new sales data..."):
+            status_msg = simulate_live_channel_orders()
+            st.success(status_msg)
+            st.toast("Stock updated instantly across channels!")
+            
+    st.write("---")
+    st.subheader("Current Synced Sales Manifest Logs")
+    df_sales = pd.read_csv(SALES_FILE)
+    st.dataframe(df_sales.tail(15), use_container_width=True, hide_index=True)
 
 # ==================== 1. MASTER SKU SHEET ====================
 elif menu == "📦 1. MASTER SKU Sheet":
