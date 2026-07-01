@@ -51,7 +51,14 @@ def load_data():
         df_p["Image URL"] = ""
         df_p.to_csv(PROD_FILE, index=False)
 
-    return df_p, pd.read_csv(MAP_FILE), pd.read_csv(SALES_FILE), pd.read_csv(STOCK_FILE)
+    # Safe reading of Sales file to handle Parser Errors gracefully
+    try:
+        df_sa = pd.read_csv(SALES_FILE, on_bad_lines='skip')
+    except:
+        df_sa = pd.DataFrame(columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
+        df_sa.to_csv(SALES_FILE, index=False)
+
+    return df_p, pd.read_csv(MAP_FILE), df_sa, pd.read_csv(STOCK_FILE)
 
 # Global initial data load
 df_prod, df_map, df_sales, df_stock = load_data()
@@ -278,9 +285,7 @@ def simulate_live_channel_orders():
     if df_p.empty:
         return "Master SKU list is empty! Please add products first."
     
-    channels = ["AMAZON", "FLIPKART", "MEESHO", "MYNTRA", "SNAPDEAL"]
     mock_orders = []
-    
     p_code_col = find_column(df_p, ["Product Code", "Master SKU", "SKU"], "Product Code")
     available_skus = df_p[p_code_col].dropna().tolist() if p_code_col in df_p.columns else []
     if not available_skus:
@@ -308,8 +313,16 @@ def simulate_live_channel_orders():
         brand_val = "VIDA LOCA"
         mock_orders.append([today_str, sku_to_log, "SINGLE", brand_val, qty])
     
+    # Save safely line-by-line avoiding structural breaks
+    try:
+        df_old_sales = pd.read_csv(SALES_FILE, on_bad_lines='skip')
+    except:
+        df_old_sales = pd.DataFrame(columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
+        
     df_new_sales = pd.DataFrame(mock_orders, columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
-    df_new_sales.to_csv(SALES_FILE, mode='a', header=False, index=False)
+    df_combined = pd.concat([df_old_sales, df_new_sales], ignore_index=True)
+    df_combined.to_csv(SALES_FILE, index=False)
+    
     return f"Successfully fetched {num_orders} live orders from Mock Marketplaces API!"
 
 # ---- Sidebar Panel ----
@@ -395,8 +408,11 @@ elif menu == "🔄 Live Channels Sync":
             
     st.write("---")
     st.subheader("Current Synced Sales Manifest Logs")
-    df_sales = pd.read_csv(SALES_FILE)
-    st.dataframe(df_sales.tail(15), use_container_width=True, hide_index=True)
+    try:
+        df_sales_view = pd.read_csv(SALES_FILE, on_bad_lines='skip')
+    except:
+        df_sales_view = pd.DataFrame(columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
+    st.dataframe(df_sales_view.tail(15), use_container_width=True, hide_index=True)
 
 # ==================== 1. MASTER SKU SHEET ====================
 elif menu == "📦 1. MASTER SKU Sheet":
@@ -528,4 +544,8 @@ elif menu == "📤 4. SALE DATA Sheet":
             bulk_df.to_csv(SALES_FILE, index=False)
             st.success("Order evaluation complete!")
             st.rerun()
-    st.dataframe(df_sales, use_container_width=True, hide_index=True)
+    try:
+        df_sales_final = pd.read_csv(SALES_FILE, on_bad_lines='skip')
+    except:
+        df_sales_final = pd.DataFrame(columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
+    st.dataframe(df_sales_final, use_container_width=True, hide_index=True)
