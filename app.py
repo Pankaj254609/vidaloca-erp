@@ -328,6 +328,29 @@ if menu == "📊 Live Dashboard":
     with m_col3: st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
     
     st.write("---")
+    
+    # 🖼️ 🔥 LARGE IMAGE PREVIEW PANEL SETUP
+    st.subheader("🖼️ Product Large Image Preview")
+    if not df_actual.empty:
+        product_options = df_actual["Product Code"].tolist()
+        selected_preview_sku = st.selectbox("Jis product ki BADHI image dekhni hai use select karein:", product_options)
+        
+        product_row = df_actual[df_actual["Product Code"] == selected_preview_sku].iloc[0]
+        img_url = product_row.get("Image URL", "")
+        
+        if img_url and str(img_url).strip() != "" and str(img_url).lower() != "nan":
+            img_col1, img_col2 = st.columns([1, 3])
+            with img_col1:
+                # Bada view dene ke liye width=250 kiya hai
+                st.image(img_url, width=250, caption=f"SKU: {selected_preview_sku}")
+            with img_col2:
+                st.markdown(f"**Product Name:** {product_row.get('Name', 'N/A')}")
+                st.markdown(f"**Color:** {product_row.get('Color', 'N/A')} | **Size:** {product_row.get('Size', 'N/A')}")
+                st.markdown(f"**Current Stock Status:** `{int(product_row.get('Actual Balance Stock', 0))}` QTY")
+        else:
+            st.info("Is product ke liye koi Image URL database mein save nahi mila.")
+            
+    st.write("---")
     df_date_summary = get_datewise_summary_cached(start_d, end_d, selected_brand=selected_brand, ignore_date=ignore_date)
     st.subheader("📅 Date-wise Stock & Sales Summary")
     if not df_date_summary.empty: st.dataframe(df_date_summary, use_container_width=True, hide_index=True)
@@ -335,9 +358,10 @@ if menu == "📊 Live Dashboard":
 
     st.write("---")
     st.subheader("📋 Inventory Ledger Table")
-    show_cols = ["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "Total Inward Stock", "Total Sold QTY", "Actual Balance Stock"]
+    # Table se image column hata diya taaki dashboard ekdam neat aur saaf dikhe
+    show_cols = ["Product Code", "Name", "Color", "Size", "Brand", "Type", "Total Inward Stock", "Total Sold QTY", "Actual Balance Stock"]
     available_show = [c for c in show_cols if c in df_actual.columns]
-    st.dataframe(df_actual[available_show], column_config={"Image URL": st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
+    st.dataframe(df_actual[available_show], use_container_width=True, hide_index=True)
 
 # ==================== LIVE CHANNELS SYNC ====================
 elif menu == "🔄 Live Channels Sync":
@@ -375,10 +399,8 @@ elif menu == "📦 1. MASTER SKU Sheet":
             st.dataframe(bulk_df.head(), hide_index=True)
             if st.button("🚀 Push All Records To Cloud DB"):
                 try:
-                    # Clear/Standardize columns name to match db schema
                     bulk_df.columns = ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"]
                     
-                    # 🔥 NaN/Blank values safely clean logic
                     bulk_df["category_code"] = bulk_df["category_code"].fillna("").astype(str)
                     bulk_df["product_code"] = bulk_df["product_code"].fillna("").astype(str).str.upper().str.strip()
                     bulk_df["name"] = bulk_df["name"].fillna("").astype(str)
@@ -438,7 +460,6 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
             try:
                 bulk_df.columns = ["seller_sku_on_channel", "sku_code", "channel_name", "pack_of", "brand"]
                 
-                # Handling Blanks inside mapping columns
                 for c in bulk_df.columns:
                     if bulk_df[c].dtype == 'object': bulk_df[c] = bulk_df[c].fillna("")
                     else: bulk_df[c] = bulk_df[c].fillna(1)
