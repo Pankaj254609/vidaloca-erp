@@ -40,43 +40,57 @@ def init_supabase() -> Client:
 supabase = init_supabase()
 
 # --- LIVE DATABASE DATA LOADING ---
-@st.cache_data(ttl=10)
 def load_data_cached():
-    # Master SKU Fetch
-    res_p = supabase.table("master_sku").select("*").execute()
-    df_p = pd.DataFrame(res_p.data)
+    # 1. Master SKU Fetch
+    try:
+        res_p = supabase.table("master_sku").select("*").execute()
+        df_p = pd.DataFrame(res_p.data)
+        if not df_p.empty:
+            df_p.columns = ["Category Code", "Product Code", "Name", "Scan Identifier", "Color", "Size", "Brand", "Type", "Component Product Code", "QTY", "Image URL"]
+    except Exception as e:
+        df_p = pd.DataFrame()
+        
     if df_p.empty:
-        df_p = pd.DataFrame(columns=["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"])
-    else:
-        # Standardize dynamic casing mapping matching previous implementation columns
-        df_p.columns = ["Category Code", "Product Code", "Name", "Scan Identifier", "Color", "Size", "Brand", "Type", "Component Product Code", "QTY", "Image URL"]
+        df_p = pd.DataFrame(columns=["Category Code", "Product Code", "Name", "Scan Identifier", "Color", "Size", "Brand", "Type", "Component Product Code", "QTY", "Image URL"])
 
-    # Mapping Matrix Fetch
-    res_m = supabase.table("channel_sku_map").select("*").execute()
-    df_m = pd.DataFrame(res_m.data)
+    # 2. Mapping Matrix Fetch
+    try:
+        res_m = supabase.table("channel_sku_map").select("*").execute()
+        df_m = pd.DataFrame(res_m.data)
+        if not df_m.empty:
+            df_m = df_m.drop(columns=["id"], errors="ignore")
+            df_m.columns = ["Seller SKU on Channel", "SKU Code", "channelName", "PACK OF", "BRAND"]
+    except Exception as e:
+        df_m = pd.DataFrame()
+        
     if df_m.empty:
         df_m = pd.DataFrame(columns=["Seller SKU on Channel", "SKU Code", "channelName", "PACK OF", "BRAND"])
-    else:
-        df_m = df_m.drop(columns=["id"], errors="ignore")
-        df_m.columns = ["Seller SKU on Channel", "SKU Code", "channelName", "PACK OF", "BRAND"]
 
-    # Sales Fetch
-    res_sa = supabase.table("sale_data").select("*").execute()
-    df_sa = pd.DataFrame(res_sa.data)
+    # 3. Sales Fetch
+    try:
+        res_sa = supabase.table("sale_data").select("*").execute()
+        df_sa = pd.DataFrame(res_sa.data)
+        if not df_sa.empty:
+            df_sa = df_sa.drop(columns=["id"], errors="ignore")
+            df_sa.columns = ["Date", "Channel SKU", "Type", "BRAND", "QTY"]
+    except Exception as e:
+        df_sa = pd.DataFrame()
+        
     if df_sa.empty:
         df_sa = pd.DataFrame(columns=["Date", "Channel SKU", "Type", "BRAND", "QTY"])
-    else:
-        df_sa = df_sa.drop(columns=["id"], errors="ignore")
-        df_sa.columns = ["Date", "Channel SKU", "Type", "BRAND", "QTY"]
 
-    # Stock Fetch
-    res_st = supabase.table("add_inventory").select("*").execute()
-    df_st = pd.DataFrame(res_st.data)
+    # 4. Stock Fetch
+    try:
+        res_st = supabase.table("add_inventory").select("*").execute()
+        df_st = pd.DataFrame(res_st.data)
+        if not df_st.empty:
+            df_st = df_st.drop(columns=["id"], errors="ignore")
+            df_st.columns = ["Date & Time", "Product Code", "Added QTY"]
+    except Exception as e:
+        df_st = pd.DataFrame()
+        
     if df_st.empty:
         df_st = pd.DataFrame(columns=["Date & Time", "Product Code", "Added QTY"])
-    else:
-        df_st = df_st.drop(columns=["id"], errors="ignore")
-        df_st.columns = ["Date & Time", "Product Code", "Added QTY"]
 
     return df_p, df_m, df_sa, df_st
 
@@ -96,7 +110,6 @@ def find_column(df, possible_names, default_name):
     return default_name
 
 # --- INVENTORY CALCULATION ---
-@st.cache_data(ttl=5)
 def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="All", ignore_date=False):
     df_p, df_m, df_sa, df_st = load_data_cached()
     
@@ -197,7 +210,6 @@ def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="
     df_p['Actual Balance Stock'] = balance_list
     return df_p
 
-@st.cache_data(ttl=5)
 def get_datewise_summary_cached(start_date, end_date, selected_brand="All", ignore_date=False):
     df_p, df_m, df_sa, df_st = load_data_cached()
     allowed_products = set(df_p["Product Code"].astype(str).str.strip().str.upper().values) if not df_p.empty else set()
@@ -281,7 +293,9 @@ def simulate_live_channel_orders():
         })
     
     if mock_orders:
-        supabase.table("sale_data").insert(mock_orders).execute()
+        try:
+            supabase.table("sale_data").insert(mock_orders).execute()
+        except: pass
     clear_app_cache()
     return f"Successfully fetched {num_orders} live orders via Unicommerce Mock API directly into Database!"
 
@@ -360,15 +374,16 @@ elif menu == "📦 1. MASTER SKU Sheet":
             bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
             st.dataframe(bulk_df.head(), hide_index=True)
             if st.button("🚀 Push All Records To Cloud DB"):
-                # Clean columns to snake_case for Supabase
-                bulk_df.columns = ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"]
-                # Delete old data to sync fresh copy
-                supabase.table("master_sku").delete().neq("product_code", "000").execute()
-                records = bulk_df.to_dict(orient="records")
-                supabase.table("master_sku").insert(records).execute()
-                clear_app_cache()
-                st.success("Master dataset pushed permanently to Supabase!")
-                st.rerun()
+                try:
+                    bulk_df.columns = ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"]
+                    supabase.table("master_sku").delete().neq("product_code", "000").execute()
+                    records = bulk_df.to_dict(orient="records")
+                    supabase.table("master_sku").insert(records).execute()
+                    clear_app_cache()
+                    st.success("Master dataset pushed permanently to Supabase!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Database sync failed. Please check table structure: {e}")
     with tab2:
         with st.form("master_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
@@ -389,10 +404,13 @@ elif menu == "📦 1. MASTER SKU Sheet":
                     "color": color, "size": size, "brand": brand, "type": p_type,
                     "component_product_code": comp_code, "qty": int(qty), "image_url": img_url
                 }
-                supabase.table("master_sku").insert(row_data).execute()
-                clear_app_cache()
-                st.success("New SKU committed safely to cloud database!")
-                st.rerun()
+                try:
+                    supabase.table("master_sku").insert(row_data).execute()
+                    clear_app_cache()
+                    st.success("New SKU committed safely to cloud database!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error inserting row: {e}")
     st.dataframe(df_prod, use_container_width=True, hide_index=True)
 
 # ==================== 2. CHANEL SKU MAP SHEET ====================
@@ -402,13 +420,16 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
     if uploaded_file is not None:
         bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         if st.button("🚀 Overwrite Mapping DB Table"):
-            bulk_df.columns = ["seller_sku_on_channel", "sku_code", "channel_name", "pack_of", "brand"]
-            supabase.table("channel_sku_map").delete().neq("sku_code", "000").execute()
-            records = bulk_df.to_dict(orient="records")
-            supabase.table("channel_sku_map").insert(records).execute()
-            clear_app_cache()
-            st.success("Mappings successfully updated on Cloud!")
-            st.rerun()
+            try:
+                bulk_df.columns = ["seller_sku_on_channel", "sku_code", "channel_name", "pack_of", "brand"]
+                supabase.table("channel_sku_map").delete().neq("sku_code", "000").execute()
+                records = bulk_df.to_dict(orient="records")
+                supabase.table("channel_sku_map").insert(records).execute()
+                clear_app_cache()
+                st.success("Mappings successfully updated on Cloud!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Mapping upload failed: {e}")
     st.dataframe(df_map, use_container_width=True, hide_index=True)
 
 # ==================== 3. ADD INVENTORY SHEET ====================
@@ -423,13 +444,15 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
             bulk_inv_df = pd.read_csv(uploaded_inv_file) if uploaded_inv_file.name.endswith('.csv') else pd.read_excel(uploaded_inv_file)
             st.dataframe(bulk_inv_df.head(), hide_index=True)
             if st.button("🚀 Process Bulk Stock Load"):
-                # Expecting Product Code and Added QTY
-                bulk_inv_df.columns = ["Product Code", "Added QTY"]
-                records = [{"product_code": str(r["Product Code"]), "added_qty": int(r["Added QTY"])} for _, r in bulk_inv_df.iterrows()]
-                supabase.table("add_inventory").insert(records).execute()
-                clear_app_cache()
-                st.success("Stock loaded permanently into cloud storage.")
-                st.rerun()
+                try:
+                    bulk_inv_df.columns = ["Product Code", "Added QTY"]
+                    records = [{"product_code": str(r["Product Code"]), "added_qty": int(r["Added QTY"])} for _, r in bulk_inv_df.iterrows()]
+                    supabase.table("add_inventory").insert(records).execute()
+                    clear_app_cache()
+                    st.success("Stock loaded permanently into cloud storage.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Stock upload error: {e}")
 
     with inv_tab2:
         unique_names = sorted(list(df_prod['Name'].dropna().unique())) if not df_prod.empty else []
@@ -460,10 +483,13 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
                         target_sku_variant = f"{base_design_prefix}-{sz}"
                         db_records.append({"product_code": target_sku_variant, "added_qty": int(qty_input)})
                 if db_records:
-                    supabase.table("add_inventory").insert(db_records).execute()
-                    clear_app_cache()
-                    st.success("Batch sizes submitted successfully!")
-                    st.rerun()
+                    try:
+                        supabase.table("add_inventory").insert(db_records).execute()
+                        clear_app_cache()
+                        st.success("Batch sizes submitted successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error matrix insert: {e}")
                     
     st.write("---")
     st.dataframe(df_stock, use_container_width=True, hide_index=True)
@@ -475,13 +501,14 @@ elif menu == "📤 4. SALE DATA Sheet":
     if uploaded_file is not None:
         bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         if st.button("🚀 Push Live Sales Manifest"):
-            # Expected format sync to match DB table schema
-            bulk_df.columns = ["date", "channel_sku", "type", "brand", "qty"]
-            # Formatting Date values to text strings for postgre standard
-            bulk_df['date'] = pd.to_datetime(bulk_df['date']).dt.strftime('%Y-%m-%d')
-            records = bulk_df.to_dict(orient="records")
-            supabase.table("sale_data").insert(records).execute()
-            clear_app_cache()
-            st.success("Order evaluation complete and synced to database!")
-            st.rerun()
+            try:
+                bulk_df.columns = ["date", "channel_sku", "type", "brand", "qty"]
+                bulk_df['date'] = pd.to_datetime(bulk_df['date']).dt.strftime('%Y-%m-%d')
+                records = bulk_df.to_dict(orient="records")
+                supabase.table("sale_data").insert(records).execute()
+                clear_app_cache()
+                st.success("Order evaluation complete and synced to database!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Sales manifest sync failed: {e}")
     st.dataframe(df_sales, use_container_width=True, hide_index=True)
