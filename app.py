@@ -375,7 +375,22 @@ elif menu == "📦 1. MASTER SKU Sheet":
             st.dataframe(bulk_df.head(), hide_index=True)
             if st.button("🚀 Push All Records To Cloud DB"):
                 try:
+                    # Clear/Standardize columns name to match db schema
                     bulk_df.columns = ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"]
+                    
+                    # 🔥 NaN/Blank values safely clean logic
+                    bulk_df["category_code"] = bulk_df["category_code"].fillna("").astype(str)
+                    bulk_df["product_code"] = bulk_df["product_code"].fillna("").astype(str).str.upper().str.strip()
+                    bulk_df["name"] = bulk_df["name"].fillna("").astype(str)
+                    bulk_df["scan_identifier"] = bulk_df["scan_identifier"].fillna("").astype(str)
+                    bulk_df["color"] = bulk_df["color"].fillna("").astype(str)
+                    bulk_df["size"] = bulk_df["size"].fillna("").astype(str)
+                    bulk_df["brand"] = bulk_df["brand"].fillna("Vida Loca").astype(str)
+                    bulk_df["type"] = bulk_df["type"].fillna("SIMPLE").astype(str)
+                    bulk_df["component_product_code"] = bulk_df["component_product_code"].fillna("").astype(str)
+                    bulk_df["qty"] = bulk_df["qty"].fillna(0).astype(int)
+                    bulk_df["image_url"] = bulk_df["image_url"].fillna("").astype(str)
+
                     supabase.table("master_sku").delete().neq("product_code", "000").execute()
                     records = bulk_df.to_dict(orient="records")
                     supabase.table("master_sku").insert(records).execute()
@@ -422,6 +437,12 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
         if st.button("🚀 Overwrite Mapping DB Table"):
             try:
                 bulk_df.columns = ["seller_sku_on_channel", "sku_code", "channel_name", "pack_of", "brand"]
+                
+                # Handling Blanks inside mapping columns
+                for c in bulk_df.columns:
+                    if bulk_df[c].dtype == 'object': bulk_df[c] = bulk_df[c].fillna("")
+                    else: bulk_df[c] = bulk_df[c].fillna(1)
+                
                 supabase.table("channel_sku_map").delete().neq("sku_code", "000").execute()
                 records = bulk_df.to_dict(orient="records")
                 supabase.table("channel_sku_map").insert(records).execute()
@@ -446,6 +467,9 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
             if st.button("🚀 Process Bulk Stock Load"):
                 try:
                     bulk_inv_df.columns = ["Product Code", "Added QTY"]
+                    bulk_inv_df["Product Code"] = bulk_inv_df["Product Code"].fillna("").astype(str)
+                    bulk_inv_df["Added QTY"] = bulk_inv_df["Added QTY"].fillna(0).astype(int)
+                    
                     records = [{"product_code": str(r["Product Code"]), "added_qty": int(r["Added QTY"])} for _, r in bulk_inv_df.iterrows()]
                     supabase.table("add_inventory").insert(records).execute()
                     clear_app_cache()
@@ -504,6 +528,12 @@ elif menu == "📤 4. SALE DATA Sheet":
             try:
                 bulk_df.columns = ["date", "channel_sku", "type", "brand", "qty"]
                 bulk_df['date'] = pd.to_datetime(bulk_df['date']).dt.strftime('%Y-%m-%d')
+                
+                bulk_df["channel_sku"] = bulk_df["channel_sku"].fillna("").astype(str)
+                bulk_df["type"] = bulk_df["type"].fillna("SINGLE").astype(str)
+                bulk_df["brand"] = bulk_df["brand"].fillna("VIDA LOCA").astype(str)
+                bulk_df["qty"] = bulk_df["qty"].fillna(0).astype(int)
+
                 records = bulk_df.to_dict(orient="records")
                 supabase.table("sale_data").insert(records).execute()
                 clear_app_cache()
