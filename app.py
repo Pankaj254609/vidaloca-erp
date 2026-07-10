@@ -3,6 +3,7 @@ import pandas as pd
 import random
 from datetime import datetime, date
 from supabase import create_client, Client
+import io
 
 # --- Theme Configuration ---
 st.set_page_config(page_title="Vida Loca Advanced ERP", layout="wide")
@@ -27,6 +28,7 @@ st.markdown("""
         border-radius: 8px !important; padding: 8px 24px !important; font-weight: 600 !important; border: none !important;
     }
     .stButton>button:hover { background-color: #2563eb !important; }
+    .download-btn { margin-bottom: 15px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -42,12 +44,40 @@ try:
 except Exception as e:
     st.error(f"Supabase Client Connection Error: {e}")
 
-# --- LIVE DATABASE DATA LOADING WITH COLUMN NORMALIZATION ---
+# --- LIVE DATABASE DATA LOADING WITH AUTO-BATCHING FOR COMPLETE DATA ---
 def load_data_cached():
+    def fetch_all_rows(table_name):
+        all_data = []
+        start = 0
+        limit = 1000  # Supabase internal limit per page
+        
+        # Ek status placeholder taaki load hote waqt user ko dikhe
+        status_placeholder = st.empty()
+        
+        while True:
+            try:
+                res = supabase.table(table_name).select("*").range(start, start + limit - 1).execute()
+                if not res.data or len(res.data) == 0:
+                    break
+                all_data.extend(res.data)
+                
+                # Agar data 5,000 se zyada ho raha ho toh screen par count update karein
+                if len(all_data) % 5000 == 0 or len(res.data) < limit:
+                    status_placeholder.caption(f"⏳ {table_name} se {len(all_data)} rows successfully fetch ho chuki hain...")
+                
+                if len(res.data) < limit:
+                    break
+                start += limit
+            except Exception as e:
+                st.error(f"Error fetching data from {table_name}: {e}")
+                break
+        
+        status_placeholder.empty() # Data fetch hone ke baad message clear karein
+        return pd.DataFrame(all_data)
+
     # 1. Master SKU Fetch
     try:
-        res_p = supabase.table("master_sku").select("*").execute()
-        df_p = pd.DataFrame(res_p.data)
+        df_p = fetch_all_rows("master_sku")
         if not df_p.empty:
             actual_cols = ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"]
             df_p = df_p[[c for c in actual_cols if c in df_p.columns]]
@@ -59,8 +89,7 @@ def load_data_cached():
 
     # 2. Mapping Matrix Fetch
     try:
-        res_m = supabase.table("channel_sku_map").select("*").execute()
-        df_m = pd.DataFrame(res_m.data)
+        df_m = fetch_all_rows("channel_sku_map")
         if not df_m.empty:
             df_m = df_m.drop(columns=["id", "created_at"], errors="ignore")
             df_m.columns = ["Seller SKU on Channel", "SKU Code", "channelName", "PACK OF", "BRAND"][:len(df_m.columns)]
@@ -71,14 +100,11 @@ def load_data_cached():
 
     # 3. Sales Fetch & Robust Header Uniformity
     try:
-        res_sa = supabase.table("sale_data").select("*").execute()
-        df_sa = pd.DataFrame(res_sa.data)
+        df_sa = fetch_all_rows("sale_data")
         if not df_sa.empty:
             df_sa = df_sa.drop(columns=["id", "created_at"], errors="ignore")
-            # Sabhi headers ko uppercase kar rahe hain taaki koi mismatch na ho
             df_sa.columns = [str(c).strip().upper() for c in df_sa.columns]
             
-            # Mapped back safely to uniform nomenclature
             rename_dict = {}
             for col in df_sa.columns:
                 if col in ["DATE"]: rename_dict[col] = "Date"
@@ -94,8 +120,7 @@ def load_data_cached():
 
     # 4. Stock Fetch
     try:
-        res_st = supabase.table("add_inventory").select("*").execute()
-        df_st = pd.DataFrame(res_st.data)
+        df_st = fetch_all_rows("add_inventory")
         if not df_st.empty:
             df_st = df_st.drop(columns=["id", "created_at"], errors="ignore")
             df_st.columns = ["Date & Time", "Product Code", "Added QTY"][:len(df_st.columns)]
@@ -114,6 +139,10 @@ def clean_sku(val):
     s = str(val).strip().upper()
     if s.endswith('.0'): s = s[:-2]
     return s
+
+# --- EXCEL / CSV CONVERSION HELPER FOR LARGE DOWNLOADS ---
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
 
 # --- INVENTORY CALCULATION ---
 def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="All", ignore_date=False):
@@ -282,7 +311,6 @@ if menu == "📊 Live Dashboard":
     end_d = st.sidebar.date_input("End Date", today)
     ignore_date = st.sidebar.checkbox("Ignore Date Filter (Show All-Time Sales)", value=True)
     
-    # 1. Extracted Pure Cleaned Brands List
     if not df_sales.empty and "Brand" in df_sales.columns:
         all_brands = ["All"] + sorted(list(df_sales['Brand'].dropna().astype(str).str.upper().unique()))
     elif not df_prod.empty and 'Brand' in df_prod.columns:
@@ -294,10 +322,8 @@ if menu == "📊 Live Dashboard":
     
     df_actual = get_actual_inventory_cached(start_date=start_d, end_date=end_d, selected_brand=selected_brand, ignore_date=ignore_date)
     
-    # 2. STRICT DIRECT METRIC INTEGRATION FROM DISK DATA DATA
     if not df_sales.empty:
         df_sales_filtered = df_sales.copy()
-        
         if not ignore_date:
             try:
                 df_sales_filtered['Parsed_Date'] = pd.to_datetime(df_sales_filtered["Date"], errors='coerce').dt.date
@@ -312,12 +338,10 @@ if menu == "📊 Live Dashboard":
     else:
         total_sales_display = 0
 
-    # 3. METRIC CARDS DISPLAY
     m_col1, m_col2, m_col3 = st.columns(3)
     with m_col1: 
         st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Total Inward Stock</div><div class="metric-value">{int(df_actual["Total Inward Stock"].sum()) if "Total Inward Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
     with m_col2: 
-        # Ab yeh bina fail huye "All" hone par EXACT 8757 dikhayega!
         st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Sale QTY</div><div class="metric-value">{total_sales_display}</div></div>', unsafe_allow_html=True)
     with m_col3: 
         st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum()) if "Actual Balance Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
@@ -351,6 +375,17 @@ elif menu == "🔄 Live Channels Sync":
 elif menu == "📦 1. MASTER SKU Sheet":
     st.markdown("<h1>📦 Master Inventory DB Records</h1>", unsafe_allow_html=True)
     
+    # ⬇️ PURE DATA EXPORT BUTTON FOR MASTER SKU
+    if not df_prod.empty:
+        st.download_button(
+            label="📥 Download Complete Master SKU Sheet (CSV)",
+            data=convert_df_to_csv(df_prod),
+            file_name=f"Master_SKU_Full_{date.today()}.csv",
+            mime="text/csv",
+            key="download_master_full"
+        )
+        st.caption(f"📊 Total Records Found in Database: {len(df_prod)} rows")
+
     tab1, tab2 = st.tabs(["📁 Bulk DB Upload (Excel/CSV)", "✍️ Manual Single Entry"])
     with tab1:
         uploaded_file = st.file_uploader("Choose File", type=["xlsx", "csv"])
@@ -367,11 +402,24 @@ elif menu == "📦 1. MASTER SKU Sheet":
                     st.success("Master SKU Uploaded!")
                     st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
+                
     st.dataframe(df_prod, use_container_width=True, hide_index=True)
 
 # ==================== 2. CHANEL SKU MAP SHEET ====================
 elif menu == "🔗 2. CHANEL SKU MAP Sheet":
     st.markdown("<h1>🔗 Channel Mapping Matrix DB</h1>", unsafe_allow_html=True)
+    
+    # ⬇️ PURE DATA EXPORT BUTTON FOR CHANNEL MAPPING (6 LAKH ROWS SAFE DOWNLOAD)
+    if not df_map.empty:
+        st.download_button(
+            label="📥 Download Complete Channel SKU Map (CSV)",
+            data=convert_df_to_csv(df_map),
+            file_name=f"Channel_SKU_Map_Full_{date.today()}.csv",
+            mime="text/csv",
+            key="download_map_full"
+        )
+        st.caption(f"📊 Total Records Found in Database: {len(df_map)} rows")
+
     uploaded_file = st.file_uploader("Upload Connection file", type=["xlsx", "csv"])
     if uploaded_file is not None:
         bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
@@ -386,11 +434,24 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
                 st.success("Mapping Matrix Updated!")
                 st.rerun()
             except Exception as e: st.error(f"Error: {e}")
+            
     st.dataframe(df_map, use_container_width=True, hide_index=True)
 
 # ==================== 3. ADD INVENTORY SHEET ====================
 elif menu == "📥 3. ADD INVENTORY Sheet":
     st.markdown("<h1>📥 Stock Inward Ledger Database Panel</h1>", unsafe_allow_html=True)
+    
+    # ⬇️ PURE DATA EXPORT BUTTON FOR INVENTORY STOCK
+    if not df_stock.empty:
+        st.download_button(
+            label="📥 Download Complete Stock Inward Ledger (CSV)",
+            data=convert_df_to_csv(df_stock),
+            file_name=f"Stock_Inward_Full_{date.today()}.csv",
+            mime="text/csv",
+            key="download_stock_full"
+        )
+        st.caption(f"📊 Total Records Found in Database: {len(df_stock)} rows")
+
     uploaded_inv_file = st.file_uploader("Choose manifest file", type=["xlsx", "csv"])
     if uploaded_inv_file is not None:
         bulk_inv_df = pd.read_csv(uploaded_inv_file) if uploaded_inv_file.name.endswith('.csv') else pd.read_excel(uploaded_inv_file)
@@ -403,11 +464,24 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
                 st.success("Inventory Logs Added!")
                 st.rerun()
             except Exception as e: st.error(f"Error: {e}")
+            
     st.dataframe(df_stock, use_container_width=True, hide_index=True)
 
 # ==================== 4. SALE DATA SHEET ====================
 elif menu == "📤 4. SALE DATA Sheet":
     st.markdown("<h1>📤 Channel Sales Manifest DB</h1>", unsafe_allow_html=True)
+    
+    # ⬇️ PURE DATA EXPORT BUTTON FOR SALE DATA
+    if not df_sales.empty:
+        st.download_button(
+            label="📥 Download Complete Sale Data Manifest (CSV)",
+            data=convert_df_to_csv(df_sales),
+            file_name=f"Sale_Data_Full_{date.today()}.csv",
+            mime="text/csv",
+            key="download_sales_full"
+        )
+        st.caption(f"📊 Total Records Found in Database: {len(df_sales)} rows")
+
     uploaded_sales_file = st.file_uploader("Choose manifest file", type=["xlsx", "csv"])
     if uploaded_sales_file is not None:
         bulk_sales_df = pd.read_csv(uploaded_sales_file) if uploaded_sales_file.name.endswith('.csv') else pd.read_excel(uploaded_sales_file)
@@ -420,4 +494,5 @@ elif menu == "📤 4. SALE DATA Sheet":
                 st.success("Sales Data Injected Successfully!")
                 st.rerun()
             except Exception as e: st.error(f"Error: {e}")
+            
     st.dataframe(df_sales, use_container_width=True, hide_index=True)
