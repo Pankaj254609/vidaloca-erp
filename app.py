@@ -456,7 +456,8 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
                     clear_app_cache()
                     st.success("Channel Mapping DB ka saara data bulk me clear ho gaya!")
                     st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
+                except Exception as e: st.error(f"Error while wiping table: {e}")
+                    
         with c2:
             st.markdown("### 🔍 Single Mapping Delete")
             if not df_map.empty:
@@ -467,25 +468,62 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
                         clear_app_cache()
                         st.success(f"Mapping for {map_to_del} successfully delete ho gayi!")
                         st.rerun()
-                    except Exception as e: st.error(f"Error: {e}")
+                    except Exception as e: st.error(f"Error while deleting row: {e}")
 
+    # 📁 BULK UPLOAD WITH CHUNK OVERWRITE LOGIC (Fixes 57014 Timeout Error)
+    st.subheader("🚀 Upload New Mapping File")
     uploaded_file = st.file_uploader("Upload Connection file", type=["xlsx", "csv"])
+    
     if uploaded_file is not None:
         bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+        
+        st.write("### Uploaded Data Preview:")
+        st.dataframe(bulk_df.head(), hide_index=True)
+        
         if st.button("🚀 Overwrite Mapping DB Table"):
             try:
-                bulk_df.columns = ["seller_sku_on_channel", "sku_code", "channel_name", "pack_of", "brand"][:len(bulk_df.columns)]
-                for c in bulk_df.columns:
-                    if bulk_df[c].dtype == 'object': bulk_df[c] = bulk_df[c].fillna("")
-                    else: bulk_df[c] = bulk_df[c].fillna(1)
+                progress_bar = st.progress(0)
+                status_text = st.empty()
                 
+                status_text.text("⚙️ Columns align aur clean kiye ja rahe hain...")
+                bulk_df.columns = ["seller_sku_on_channel", "sku_code", "channel_name", "pack_of", "brand"][:len(bulk_df.columns)]
+                
+                for c in bulk_df.columns:
+                    if bulk_df[c].dtype == 'object': 
+                        bulk_df[c] = bulk_df[c].fillna("")
+                    else: 
+                        bulk_df[c] = bulk_df[c].fillna(1)
+                
+                status_text.text("🗑️ Purana database saaf (wipe) kiya ja raha hai...")
                 supabase.table("channel_sku_map").delete().neq("sku_code", "000").execute()
+                
                 records = bulk_df.to_dict(orient="records")
-                supabase.table("channel_sku_map").insert(records).execute()
+                total_records = len(records)
+                
+                # Using 500 records chunk size to prevent database timeouts
+                chunk_size = 500
+                status_text.text(f"🚀 Cloud par upload shuru: Total {total_records} rows hain...")
+                
+                for i in range(0, total_records, chunk_size):
+                    chunk = records[i:i + chunk_size]
+                    supabase.table("channel_sku_map").insert(chunk).execute()
+                    
+                    percent_complete = min(100, int(((i + len(chunk)) / total_records) * 100))
+                    progress_bar.progress(percent_complete)
+                    status_text.text(f"⏳ Uploaded {min(i + chunk_size, total_records)} / {total_records} rows...")
+                
+                status_text.empty()
+                progress_bar.empty()
+                
                 clear_app_cache()
-                st.success("Mappings successfully updated on Cloud!")
+                st.success("Old mapping wiped and new dataset overwritten successfully without timeouts!")
                 st.rerun()
-            except Exception as e: st.error(f"Mapping upload failed: {e}")
+                    
+            except Exception as e:
+                st.error(f"Mapping upload or database integration failed: {e}")
+                
+    st.write("---")
+    st.subheader("📊 Live Channel Connection Data Currently in Cloud Storage")
     st.dataframe(df_map, use_container_width=True, hide_index=True)
 
 # ==================== 3. ADD INVENTORY SHEET ====================
