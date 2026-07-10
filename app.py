@@ -102,7 +102,6 @@ def load_data_cached():
             df_sa = df_sa.drop(columns=["created_at"], errors="ignore")
             df_sa.columns = ["id" if str(c).lower()=='id' else c for c in df_sa.columns]
             
-            # Map clean database labels to DataFrame structure
             rename_dict = {}
             for col in df_sa.columns:
                 if col in ["id", "ID"]: rename_dict[col] = "ID"
@@ -365,7 +364,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
     cols_to_view = [c for c in ["ID", "Product Code", "Added QTY", "Date & Time"] if c in df_stock.columns]
     st.dataframe(df_stock[cols_to_view], use_container_width=True, hide_index=True)
 
-# ==================== 📤 4. SALE DATA SHEET (UPGRADED SECTION WITH INPUTS) ====================
+# ==================== 📤 4. SALE DATA SHEET (FIXED FOR TIMESTAMP SERIALISATION) ====================
 elif menu == "📤 4. SALE DATA Sheet":
     st.markdown("<h1>📤 Channel Sales Manifest Database Control</h1>", unsafe_allow_html=True)
     
@@ -379,7 +378,6 @@ elif menu == "📤 4. SALE DATA Sheet":
         )
         st.caption(f"📊 Total Loaded Manifest Count: {len(df_sales)} rows")
 
-    # 🛠️ MANIFEST INPUT PORTS (TABS FOR DUAL MODES)
     s_tab1, s_tab2 = st.tabs(["✍️ Single Sales Entry Mode", "📁 Bulk Sales Sheet Manifest Upload"])
     
     with s_tab1:
@@ -388,7 +386,6 @@ elif menu == "📤 4. SALE DATA Sheet":
             col_s1, col_s2 = st.columns(2)
             with col_s1:
                 sale_date = st.date_input("Order Date", date.today())
-                # Pull active mapped SKU dropdown list to ensure uniformity
                 channel_sku_list = sorted(list(df_map["Seller SKU on Channel"].dropna().unique())) if not df_map.empty else []
                 s_sku = st.selectbox("Select Channel SKU", channel_sku_list) if channel_sku_list else st.text_input("Enter Channel SKU").strip().upper()
                 s_type = st.selectbox("Order Type", ["SINGLE", "BUNDLE", "BUNDAL"])
@@ -411,8 +408,7 @@ elif menu == "📤 4. SALE DATA Sheet":
                     clear_app_cache()
                     st.success(f"Order Manifest Linked successfully for {s_sku}!")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Database Error: {e}")
+                except Exception as e: st.error(f"Database Error: {e}")
                     
     with s_tab2:
         st.subheader("Upload Bulk Channel Sales Sheet")
@@ -423,7 +419,6 @@ elif menu == "📤 4. SALE DATA Sheet":
             bulk_sales_df = pd.read_csv(uploaded_sale_file) if uploaded_sale_file.name.endswith('.csv') else pd.read_excel(uploaded_sale_file)
             if st.button("🚀 Process Bulk Sales Upload"):
                 try:
-                    # Normalize columns mapping schema before insertion 
                     bulk_sales_df.columns = [str(c).strip().lower() for c in bulk_sales_df.columns]
                     rename_bulk = {}
                     for c in bulk_sales_df.columns:
@@ -437,14 +432,16 @@ elif menu == "📤 4. SALE DATA Sheet":
                     needed_cols = ['date', 'channel_sku', 'type', 'brand', 'qty']
                     bulk_sales_df = bulk_sales_df[[col for col in needed_cols if col in bulk_sales_df.columns]]
                     
-                    # Upload in standard batch records structure
+                    # 🔥 FIXED LINE: Pandas timestamp object ko string me stringify kiya taaki JSON serializable error na aaye
+                    if 'date' in bulk_sales_df.columns:
+                        bulk_sales_df['date'] = pd.to_datetime(bulk_sales_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                    
                     sales_records = bulk_sales_df.to_dict(orient="records")
                     supabase.table("sale_data").insert(sales_records).execute()
                     clear_app_cache()
                     st.success("Bulk Sales Records Synchronized Successfully!")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Upload Error: {e}")
+                except Exception as e: st.error(f"Upload Error: {e}")
 
     st.write("---")
     st.subheader("Current Manifest Log Registry Table")
