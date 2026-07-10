@@ -367,6 +367,31 @@ elif menu == "🔄 Live Channels Sync":
 # ==================== 1. MASTER SKU SHEET ====================
 elif menu == "📦 1. MASTER SKU Sheet":
     st.markdown("<h1>📦 Master Inventory DB Records</h1>", unsafe_allow_html=True)
+    
+    # 🔥 DATA EDIT / DELETE MANAGER FOR MASTER SKU
+    with st.expander("🛠️ Data Management Control (Bulk / Single Entry Reset)"):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("### 🗑️ Bulk Reset")
+            if st.button("🔴 Clear All Master SKU Records"):
+                try:
+                    supabase.table("master_sku").delete().neq("product_code", "000_BYPASS").execute()
+                    clear_app_cache()
+                    st.success("Master SKU ka saara data bulk me delete ho gaya hai!")
+                    st.rerun()
+                except Exception as e: st.error(f"Error: {e}")
+        with c2:
+            st.markdown("### 🔍 Single SKU Delete")
+            if not df_prod.empty:
+                sku_to_del = st.selectbox("Delete karne ke liye Code select karein:", df_prod["Product Code"].unique(), key="del_mst")
+                if st.button("🗑️ Delete Selected SKU Record"):
+                    try:
+                        supabase.table("master_sku").delete().eq("product_code", sku_to_del).execute()
+                        clear_app_cache()
+                        st.success(f"SKU {sku_to_del} successfully delete ho gaya!")
+                        st.rerun()
+                    except Exception as e: st.error(f"Error: {e}")
+
     tab1, tab2 = st.tabs(["📁 Bulk DB Upload (Excel/CSV)", "✍️ Manual Single Entry"])
     
     with tab1:
@@ -377,12 +402,9 @@ elif menu == "📦 1. MASTER SKU Sheet":
             if st.button("🚀 Push All Records To Cloud DB"):
                 try:
                     bulk_df.columns = ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"][:len(bulk_df.columns)]
-                    
                     for c in ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "image_url"]:
-                        if c in bulk_df.columns:
-                            bulk_df[c] = bulk_df[c].fillna("").astype(str)
-                    if "qty" in bulk_df.columns:
-                        bulk_df["qty"] = pd.to_numeric(bulk_df["qty"], errors='coerce').fillna(0).astype(int)
+                        if c in bulk_df.columns: bulk_df[c] = bulk_df[c].fillna("").astype(str)
+                    if "qty" in bulk_df.columns: bulk_df["qty"] = pd.to_numeric(bulk_df["qty"], errors='coerce').fillna(0).astype(int)
 
                     supabase.table("master_sku").delete().neq("product_code", "000").execute()
                     records = bulk_df.to_dict(orient="records")
@@ -390,8 +412,7 @@ elif menu == "📦 1. MASTER SKU Sheet":
                     clear_app_cache()
                     st.success("Master dataset pushed permanently to Supabase!")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Database sync failed: {e}")
+                except Exception as e: st.error(f"Database sync failed: {e}")
     with tab2:
         with st.form("master_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
@@ -417,25 +438,46 @@ elif menu == "📦 1. MASTER SKU Sheet":
                     clear_app_cache()
                     st.success("New SKU committed safely to cloud database!")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Error inserting row: {e}")
+                except Exception as e: st.error(f"Error inserting row: {e}")
     st.dataframe(df_prod, use_container_width=True, hide_index=True)
 
 # ==================== 2. CHANEL SKU MAP SHEET ====================
 elif menu == "🔗 2. CHANEL SKU MAP Sheet":
     st.markdown("<h1>🔗 Channel Mapping Matrix DB</h1>", unsafe_allow_html=True)
+    
+    # 🔥 DATA EDIT / DELETE MANAGER FOR CHANNEL MAPPING
+    with st.expander("🛠️ Data Management Control (Bulk / Single Entry Reset)"):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("### 🗑️ Bulk Reset")
+            if st.button("🔴 Clear All Connection Mappings"):
+                try:
+                    supabase.table("channel_sku_map").delete().neq("sku_code", "000_BYPASS").execute()
+                    clear_app_cache()
+                    st.success("Channel Mapping DB ka saara data bulk me clear ho gaya!")
+                    st.rerun()
+                except Exception as e: st.error(f"Error: {e}")
+        with c2:
+            st.markdown("### 🔍 Single Mapping Delete")
+            if not df_map.empty:
+                map_to_del = st.selectbox("Delete karne ke liye Seller SKU select karein:", df_map["Seller SKU on Channel"].unique(), key="del_map")
+                if st.button("🗑️ Delete Selected Mapping Record"):
+                    try:
+                        supabase.table("channel_sku_map").delete().eq("seller_sku_on_channel", map_to_del).execute()
+                        clear_app_cache()
+                        st.success(f"Mapping for {map_to_del} successfully delete ho gayi!")
+                        st.rerun()
+                    except Exception as e: st.error(f"Error: {e}")
+
     uploaded_file = st.file_uploader("Upload Connection file", type=["xlsx", "csv"])
     if uploaded_file is not None:
         bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         if st.button("🚀 Overwrite Mapping DB Table"):
             try:
                 bulk_df.columns = ["seller_sku_on_channel", "sku_code", "channel_name", "pack_of", "brand"][:len(bulk_df.columns)]
-                
                 for c in bulk_df.columns:
-                    if bulk_df[c].dtype == 'object': 
-                        bulk_df[c] = bulk_df[c].fillna("")
-                    else: 
-                        bulk_df[c] = bulk_df[c].fillna(1)
+                    if bulk_df[c].dtype == 'object': bulk_df[c] = bulk_df[c].fillna("")
+                    else: bulk_df[c] = bulk_df[c].fillna(1)
                 
                 supabase.table("channel_sku_map").delete().neq("sku_code", "000").execute()
                 records = bulk_df.to_dict(orient="records")
@@ -443,13 +485,37 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
                 clear_app_cache()
                 st.success("Mappings successfully updated on Cloud!")
                 st.rerun()
-            except Exception as e:
-                st.error(f"Mapping upload failed: {e}")
+            except Exception as e: st.error(f"Mapping upload failed: {e}")
     st.dataframe(df_map, use_container_width=True, hide_index=True)
 
 # ==================== 3. ADD INVENTORY SHEET ====================
 elif menu == "📥 3. ADD INVENTORY Sheet":
     st.markdown("<h1>📥 Stock Inward Ledger Database Panel</h1>", unsafe_allow_html=True)
+    
+    # 🔥 DATA EDIT / DELETE MANAGER FOR INVENTORY STOCK INWARD
+    with st.expander("🛠️ Data Management Control (Bulk / Single Entry Reset)"):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("### 🗑️ Bulk Reset")
+            if st.button("🔴 Clear All Stock Inward Logs"):
+                try:
+                    supabase.table("add_inventory").delete().neq("product_code", "000_BYPASS").execute()
+                    clear_app_cache()
+                    st.success("Inventory Stock Ledger poora bulk me delete ho gaya!")
+                    st.rerun()
+                except Exception as e: st.error(f"Error: {e}")
+        with c2:
+            st.markdown("### 🔍 Single Stock Entry Delete")
+            if not df_stock.empty:
+                stock_sku_del = st.selectbox("Log delete karne ke liye variant select karein:", df_stock["Product Code"].unique(), key="del_stock")
+                if st.button("🗑️ Delete Selected Variant Logs"):
+                    try:
+                        supabase.table("add_inventory").delete().eq("product_code", stock_sku_del).execute()
+                        clear_app_cache()
+                        st.success(f"Stock logs for variant {stock_sku_del} successfully deleted!")
+                        st.rerun()
+                    except Exception as e: st.error(f"Error: {e}")
+
     inv_tab1, inv_tab2 = st.tabs(["📁 Bulk Inventory Upload", "✍️ Matrix Entry"])
 
     with inv_tab1:
@@ -468,8 +534,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
                     clear_app_cache()
                     st.success("Stock loaded permanently into cloud storage.")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Stock upload error: {e}")
+                except Exception as e: st.error(f"Stock upload error: {e}")
 
     with inv_tab2:
         unique_names = sorted(list(df_prod['Name'].dropna().unique())) if not df_prod.empty and 'Name' in df_prod.columns else []
@@ -508,10 +573,8 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
                                 clear_app_cache()
                                 st.success("Batch sizes submitted successfully!")
                                 st.rerun()
-                            except Exception as e:
-                                st.error(f"Error matrix insert: {e}")
-        else:
-            st.warning("Master SKU list is empty! Matrix allocation ke liye pehle tab 1 se bulk master upload karein.")
+                            except Exception as e: st.error(f"Error matrix insert: {e}")
+        else: st.warning("Master SKU list is empty! Pehle data upload karein.")
                         
     st.write("---")
     st.dataframe(df_stock, use_container_width=True, hide_index=True)
@@ -519,6 +582,31 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
 # ==================== 4. SALE DATA SHEET ====================
 elif menu == "📤 4. SALE DATA Sheet":
     st.markdown("<h1>📤 Channel Sales Manifest DB</h1>", unsafe_allow_html=True)
+    
+    # 🔥 DATA EDIT / DELETE MANAGER FOR CHANNEL SALES DATA
+    with st.expander("🛠️ Data Management Control (Bulk / Single Entry Reset)"):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("### 🗑️ Bulk Reset")
+            if st.button("🔴 Clear All Sales Logs Records"):
+                try:
+                    supabase.table("sale_data").delete().neq("channel_sku", "000_BYPASS").execute()
+                    clear_app_cache()
+                    st.success("Channel Sales Manifest DB ka poora data bulk me saaf ho gaya!")
+                    st.rerun()
+                except Exception as e: st.error(f"Error: {e}")
+        with c2:
+            st.markdown("### 🔍 Single Order SKU Log Delete")
+            if not df_sales.empty:
+                sales_sku_del = st.selectbox("Delete karne ke liye Channel SKU select karein:", df_sales["Channel SKU"].unique(), key="del_sales")
+                if st.button("🗑️ Delete Selected Order SKU Logs"):
+                    try:
+                        supabase.table("sale_data").delete().eq("channel_sku", sales_sku_del).execute()
+                        clear_app_cache()
+                        st.success(f"Order records for {sales_sku_del} successfully deleted!")
+                        st.rerun()
+                    except Exception as e: st.error(f"Error: {e}")
+
     uploaded_file = st.file_uploader("Upload manifest logs file", type=["xlsx", "csv"])
     if uploaded_file is not None:
         bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
@@ -538,6 +626,5 @@ elif menu == "📤 4. SALE DATA Sheet":
                 clear_app_cache()
                 st.success("Order evaluation complete and synced to database!")
                 st.rerun()
-            except Exception as e:
-                st.error(f"Sales manifest sync failed: {e}")
+            except Exception as e: st.error(f"Sales manifest sync failed: {e}")
     st.dataframe(df_sales, use_container_width=True, hide_index=True)
