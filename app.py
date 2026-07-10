@@ -43,7 +43,7 @@ try:
 except Exception as e:
     st.error(f"Supabase Client Connection Error: {e}")
 
-# --- ⚡ MULTITHREADED PARALLEL BULK DATA RETRIEVAL ENGINE ⚡ ---
+# --- ⚡ BULK SUPABASE FETCH WITH AUTO-PAGINATION ENGINE ⚡ ---
 def fetch_chunk(table_name, start, limit):
     try:
         res = supabase.table(table_name).select("*").range(start, start + limit - 1).execute()
@@ -51,22 +51,21 @@ def fetch_chunk(table_name, start, limit):
     except:
         return []
 
-@st.cache_data(ttl=300, show_spinner="⚡ Cloud Database se 6 Lakh+ Data Ultra-Fast Load ho raha hai...")
+@st.cache_data(ttl=300, show_spinner="⚡ Cloud Database se 6 Lakh+ Records Fetch ho rahe hain...")
 def load_data_cached():
     def fetch_all_rows_multithreaded(table_name):
-        # 1. Sabse pehle count nikalte hain taaki pata chale loop kitna chalana hai
         try:
+            # Pura data count auto-detect karne ke liye exact count request
             count_res = supabase.table(table_name).select("id", count="exact").limit(1).execute()
-            total_rows = count_res.count if count_res.count else 100000
+            total_rows = count_res.count if count_res.count else 200000
         except:
-            total_rows = 600000  # Default fallback safe side
+            total_rows = 600000  # Safe side fallback
             
-        limit = 5000
+        limit = 4000
         ranges = [(table_name, i, limit) for i in range(0, total_rows + limit, limit)]
         
         all_data = []
-        # Parallel workers use karke network lag ko khatam kiya
-        with ThreadPoolExecutor(max_workers=15) as executor:
+        with ThreadPoolExecutor(max_workers=20) as executor:
             results = executor.map(lambda p: fetch_chunk(*p), ranges)
             for rows in results:
                 if rows:
@@ -97,7 +96,7 @@ def load_data_cached():
     if df_m.empty:
         df_m = pd.DataFrame(columns=["Seller SKU on Channel", "SKU Code", "channelName", "PACK OF", "BRAND"])
 
-    # 3. Sales Fetch with Multithreading Support
+    # 3. Sales Fetch 
     try:
         df_sa = fetch_all_rows_multithreaded("sale_data")
         if not df_sa.empty:
@@ -121,12 +120,17 @@ def load_data_cached():
     try:
         df_st = fetch_all_rows_multithreaded("add_inventory")
         if not df_st.empty:
-            df_st = df_st.drop(columns=["id", "created_at"], errors="ignore")
-            df_st.columns = ["Date & Time", "Product Code", "Added QTY"][:len(df_st.columns)]
+            df_st = df_st.drop(columns=["created_at"], errors="ignore")
+            # Keep ID columns for actions if needed
+            df_st.columns = ["id" if str(c).lower()=='id' else c for c in df_st.columns]
+            rename_st = {"id": "ID", "product_code": "Product Code", "added_qty": "Added QTY"}
+            df_st = df_st.rename(columns=rename_st)
+            if "Date & Time" not in df_st.columns:
+                df_st["Date & Time"] = datetime.now().strftime("%Y-%m-%d")
     except:
         df_st = pd.DataFrame()
     if df_st.empty:
-        df_st = pd.DataFrame(columns=["Date & Time", "Product Code", "Added QTY"])
+        df_st = pd.DataFrame(columns=["ID", "Product Code", "Added QTY", "Date & Time"])
 
     return df_p, df_m, df_sa, df_st
 
@@ -142,14 +146,13 @@ def clean_sku(val):
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
-# --- ULTRA-FAST LEDGER ENGINE (GROUPBY & VECTORIZED MAPS) ---
+# --- INVENTORY ENGINE ---
 def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="All", ignore_date=False):
     df_p, df_m, df_sa, df_st = load_data_cached()
     
     df_p["Product Code Clean"] = df_p["Product Code"].apply(clean_sku)
     df_p["QTY"] = pd.to_numeric(df_p["QTY"], errors='coerce').fillna(0).astype(int)
     
-    # Inward Calculation
     inward_map = {}
     if not df_st.empty:
         df_st_cp = df_st.copy()
@@ -167,7 +170,6 @@ def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="
     df_p["Inward Log Added"] = df_p["Product Code Clean"].map(inward_map).fillna(0).astype(int)
     df_p["Total Inward Stock"] = df_p["QTY"] + df_p["Inward Log Added"]
 
-    # Sales Calculation mapping
     sold_stock = {code: 0 for code in df_p["Product Code Clean"].unique()}
     
     if not df_sa.empty:
@@ -189,8 +191,6 @@ def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="
             chanel_map = dict(zip(df_m["Seller SKU on Channel"].apply(clean_sku), df_m["SKU Code"].apply(clean_sku)))
             
         df_sa_cp["Mapped SKU"] = df_sa_cp["Channel SKU Clean"].map(chanel_map).fillna(df_sa_cp["Channel SKU Clean"])
-        
-        # Strict Fast Groupby
         sales_summary = df_sa_cp.groupby(["Mapped SKU", "Type"])["Qty"].sum().to_dict()
         
         scan_to_comp = dict(zip(df_p["Scan Identifier"].apply(clean_sku), df_p["Component Product Code"].apply(clean_sku)))
@@ -281,10 +281,8 @@ if menu == "📊 Live Dashboard":
     all_brands = sorted(list(set(all_brands)), key=lambda x: (x != "All", x))
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
     
-    # 1. Process Ledger
     df_actual = get_actual_inventory_cached(start_date=start_d, end_date=end_d, selected_brand=selected_brand, ignore_date=ignore_date)
     
-    # 2. Strict Filter Calculation 
     if not df_sales.empty:
         df_sales_filtered = df_sales.copy()
         df_sales_filtered["Qty"] = pd.to_numeric(df_sales_filtered["Qty"], errors='coerce').fillna(0).astype(int)
@@ -306,7 +304,6 @@ if menu == "📊 Live Dashboard":
     with m_col1: 
         st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Total Inward Stock</div><div class="metric-value">{int(df_actual["Total Inward Stock"].sum()) if "Total Inward Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
     with m_col2: 
-        # Yeh metric ab direct multithreaded 6 lakh rows ko bina drop kiye accurately sum karega!
         st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Sale QTY</div><div class="metric-value">{total_sales_display}</div></div>', unsafe_allow_html=True)
     with m_col3: 
         st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum()) if "Actual Balance Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
@@ -320,11 +317,76 @@ if menu == "📊 Live Dashboard":
     st.subheader("📋 Inventory Ledger Table")
     show_cols = ["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "Total Inward Stock", "Total Sold QTY", "Actual Balance Stock"]
     available_show = [c for c in show_cols if c in df_actual.columns]
-    
-    # Sync matching with Total Sold QTY column
     st.dataframe(df_actual[available_show], column_config={"Image URL": st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
 
-# (Rest of tables remain identical and secure...)
+# ==================== 📥 3. ADD INVENTORY SHEET (FIXED SECTION) ====================
+elif menu == "📥 3. ADD INVENTORY Sheet":
+    st.markdown("<h1>📥 Stock Inward Ledger Database Panel</h1>", unsafe_allow_html=True)
+    
+    if not df_stock.empty:
+        st.download_button(
+            label="📥 Download Complete Stock Inward Ledger (CSV)",
+            data=convert_df_to_csv(df_stock),
+            file_name=f"Stock_Inward_Full_{date.today()}.csv",
+            mime="text/csv",
+            key="download_stock_full"
+        )
+        st.caption(f"📊 Total Records Found in Database: {len(df_stock)} rows")
+
+    # 🛠️ DUAL SUBMISSION OPTION (SINGLE ENTRY & BULK UPLOAD TABS)
+    tab1, tab2 = st.tabs(["✍️ Single Entry Manual Mode", "📁 Bulk Excel/CSV Manifest Load"])
+    
+    with tab1:
+        st.subheader("Add Single Stock Record")
+        with st.form("single_inventory_form", clear_on_submit=True):
+            # Input helper using existing Master product codes dropdown
+            p_code_list = sorted(list(df_prod["Product Code"].dropna().unique())) if not df_prod.empty else []
+            
+            if p_code_list:
+                prod_input = st.selectbox("Select Product Code", p_code_list)
+            else:
+                prod_input = st.text_input("Enter Product Code Manually").strip().upper()
+                
+            qty_input = st.number_input("Enter Added Quantity", min_value=1, step=1, value=1)
+            submit_single = st.form_submit_button("🚀 Insert Record to Database")
+            
+            if submit_single:
+                if prod_input == "":
+                    st.error("Product Code blank nahi ho sakta!")
+                else:
+                    try:
+                        single_payload = {"product_code": prod_input, "added_qty": int(qty_input)}
+                        supabase.table("add_inventory").insert(single_payload).execute()
+                        clear_app_cache()
+                        st.success(f"Success! {qty_input} Qty added for {prod_input}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Database Error: {e}")
+                        
+    with tab2:
+        st.subheader("Upload Bulk Inventory Log Sheet")
+        uploaded_inv_file = st.file_uploader("Choose manifest file", type=["xlsx", "csv"])
+        if uploaded_inv_file is not None:
+            bulk_inv_df = pd.read_csv(uploaded_inv_file) if uploaded_inv_file.name.endswith('.csv') else pd.read_excel(uploaded_inv_file)
+            if st.button("🚀 Process Bulk Stock Load"):
+                try:
+                    bulk_inv_df.columns = ["product_code", "added_qty"][:len(bulk_inv_df.columns)]
+                    records = bulk_inv_df.to_dict(orient="records")
+                    supabase.table("add_inventory").insert(records).execute()
+                    clear_app_cache()
+                    st.success("Inventory Bulk Logs Added Successfully!")
+                    st.rerun()
+                except Exception as e: 
+                    st.error(f"Error processing upload: {e}")
+            
+    st.write("---")
+    st.subheader("Current Stock Inward Log Records Table")
+    
+    # Optional Row Removal Feature to control data corrections
+    cols_to_view = [c for c in ["ID", "Product Code", "Added QTY", "Date & Time"] if c in df_stock.columns]
+    st.dataframe(df_stock[cols_to_view], use_container_width=True, hide_index=True)
+
+# ==================== OTHER PANELS ====================
 elif menu == "🔄 Live Channels Sync":
     st.markdown("<h1>🔄 Live Channel Marketplace Integrations</h1>", unsafe_allow_html=True)
     st.dataframe(df_sales.tail(15), use_container_width=True, hide_index=True)
@@ -334,9 +396,6 @@ elif menu == "📦 1. MASTER SKU Sheet":
 elif menu == "🔗 2. CHANEL SKU MAP Sheet":
     st.markdown("<h1>🔗 Channel Mapping Matrix DB</h1>", unsafe_allow_html=True)
     st.dataframe(df_map, use_container_width=True, hide_index=True)
-elif menu == "📥 3. ADD INVENTORY Sheet":
-    st.markdown("<h1>📥 Stock Inward Ledger Database Panel</h1>", unsafe_allow_html=True)
-    st.dataframe(df_stock, use_container_width=True, hide_index=True)
 elif menu == "📤 4. SALE DATA Sheet":
     st.markdown("<h1>📤 Channel Sales Manifest DB</h1>", unsafe_allow_html=True)
     st.dataframe(df_sales, use_container_width=True, hide_index=True)
