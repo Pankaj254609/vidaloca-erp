@@ -99,21 +99,23 @@ def load_data_cached():
     try:
         df_sa = fetch_all_rows_multithreaded("sale_data")
         if not df_sa.empty:
-            df_sa = df_sa.drop(columns=["id", "created_at"], errors="ignore")
-            df_sa.columns = [str(c).strip().upper() for c in df_sa.columns]
+            df_sa = df_sa.drop(columns=["created_at"], errors="ignore")
+            df_sa.columns = ["id" if str(c).lower()=='id' else c for c in df_sa.columns]
             
+            # Map clean database labels to DataFrame structure
             rename_dict = {}
             for col in df_sa.columns:
-                if col in ["DATE"]: rename_dict[col] = "Date"
-                elif col in ["CHANNEL_SKU", "ITEM SKU CODE", "ITEM_SKU_CODE", "SKU"]: rename_dict[col] = "Channel SKU"
-                elif col in ["TYPE"]: rename_dict[col] = "Type"
-                elif col in ["BRAND"]: rename_dict[col] = "Brand"
-                elif col in ["QTY", "QUANTITY"]: rename_dict[col] = "Qty"
+                if col in ["id", "ID"]: rename_dict[col] = "ID"
+                elif col in ["date", "DATE"]: rename_dict[col] = "Date"
+                elif col in ["channel_sku", "CHANNEL_SKU", "ITEM SKU CODE", "ITEM_SKU_CODE", "SKU"]: rename_dict[col] = "Channel SKU"
+                elif col in ["type", "TYPE"]: rename_dict[col] = "Type"
+                elif col in ["brand", "BRAND"]: rename_dict[col] = "Brand"
+                elif col in ["qty", "QTY", "quantity", "QUANTITY"]: rename_dict[col] = "Qty"
             df_sa = df_sa.rename(columns=rename_dict)
     except:
         df_sa = pd.DataFrame()
     if df_sa.empty:
-        df_sa = pd.DataFrame(columns=["Date", "Channel SKU", "Type", "Brand", "Qty"])
+        df_sa = pd.DataFrame(columns=["ID", "Date", "Channel SKU", "Type", "Brand", "Qty"])
 
     # 4. Stock Fetch
     try:
@@ -144,16 +146,14 @@ def clean_sku(val):
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
-# --- 🚀 REVISED BULLETPROOF INVENTORY LEDGER ENGINE 🚀 ---
+# --- INVENTORY LEDGER ENGINE ---
 def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="All", ignore_date=False):
     df_p, df_m, df_sa, df_st = load_data_cached()
     
-    # Clean master profiles
     df_p_cp = df_p.copy()
     df_p_cp["Product Code Clean"] = df_p_cp["Product Code"].apply(clean_sku)
     df_p_cp["QTY"] = pd.to_numeric(df_p_cp["QTY"], errors='coerce').fillna(0).astype(int)
     
-    # 1. Inward Addition Calculation
     inward_map = {}
     if not df_st.empty:
         df_st_cp = df_st.copy()
@@ -171,7 +171,6 @@ def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="
     df_p_cp["Inward Log Added"] = df_p_cp["Product Code Clean"].map(inward_map).fillna(0).astype(int)
     df_p_cp["Total Inward Stock"] = df_p_cp["QTY"] + df_p_cp["Inward Log Added"]
 
-    # 2. Strict Uniform Vector Mapping for Ledger Sales Column
     sold_stock = {code: 0 for code in df_p_cp["Product Code Clean"].unique()}
     
     if not df_sa.empty:
@@ -189,14 +188,11 @@ def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="
         if selected_brand != "All" and "Brand" in df_sa_cp.columns:
             df_sa_cp = df_sa_cp[df_sa_cp["Brand"].astype(str).str.strip().str.upper() == selected_brand.upper()]
             
-        # Build mapping matrix dictionary securely
         chanel_map = {}
         if not df_m.empty:
             chanel_map = dict(zip(df_m["Seller SKU on Channel"].apply(clean_sku), df_m["SKU Code"].apply(clean_sku)))
             
         df_sa_cp["Mapped SKU"] = df_sa_cp["Channel SKU Clean"].map(chanel_map).fillna(df_sa_cp["Channel SKU Clean"])
-        
-        # Aggregate base rows cleanly before loop parsing
         sales_summary = df_sa_cp.groupby(["Mapped SKU", "Type Clean"])["Qty"].sum().reset_index()
         
         scan_to_comp = dict(zip(df_p_cp["Scan Identifier"].apply(clean_sku), df_p_cp["Component Product Code"].apply(clean_sku)))
@@ -209,15 +205,13 @@ def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="
             
             if s_type in ["BUNDAL", "BUNDLE"]:
                 comp_sku = scan_to_comp.get(sku, "")
-                if comp_sku in sold_stock: 
-                    sold_stock[comp_sku] += qty
+                if comp_sku in sold_stock: sold_stock[comp_sku] += qty
             else:
                 if sku in sold_stock:
                     sold_stock[sku] += qty
                 else:
                     alt_sku = comp_to_prod.get(sku, "")
-                    if alt_sku in sold_stock: 
-                        sold_stock[alt_sku] += qty
+                    if alt_sku in sold_stock: sold_stock[alt_sku] += qty
 
     df_p_cp["Total Sold QTY"] = df_p_cp["Product Code Clean"].map(sold_stock).fillna(0).astype(int)
     df_p_cp["Actual Balance Stock"] = df_p_cp["Total Inward Stock"] - df_p_cp["Total Sold QTY"]
@@ -292,10 +286,8 @@ if menu == "📊 Live Dashboard":
     all_brands = sorted(list(set(all_brands)), key=lambda x: (x != "All", x))
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
     
-    # 1. Fetch fixed calculated matrix
     df_actual = get_actual_inventory_cached(start_date=start_d, end_date=end_d, selected_brand=selected_brand, ignore_date=ignore_date)
     
-    # 2. Strict Filter Card Metric
     if not df_sales.empty:
         df_sales_filtered = df_sales.copy()
         df_sales_filtered["Qty"] = pd.to_numeric(df_sales_filtered["Qty"], errors='coerce').fillna(0).astype(int)
@@ -330,8 +322,6 @@ if menu == "📊 Live Dashboard":
     st.subheader("📋 Inventory Ledger Table")
     show_cols = ["Image URL", "Product Code", "Name", "Color", "Size", "Brand", "Type", "Total Inward Stock", "Total Sold QTY", "Actual Balance Stock"]
     available_show = [c for c in show_cols if c in df_actual.columns]
-    
-    # Ab is ledger table me Product Code wise real quantities dynamic mapping ke throw dikhengi!
     st.dataframe(df_actual[available_show], column_config={"Image URL": st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
 
 # ==================== 📥 3. ADD INVENTORY SHEET ====================
@@ -339,62 +329,127 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
     st.markdown("<h1>📥 Stock Inward Ledger Database Panel</h1>", unsafe_allow_html=True)
     
     if not df_stock.empty:
-        st.download_button(
-            label="📥 Download Complete Stock Inward Ledger (CSV)",
-            data=convert_df_to_csv(df_stock),
-            file_name=f"Stock_Inward_Full_{date.today()}.csv",
-            mime="text/csv",
-            key="download_stock_full"
-        )
-        st.caption(f"📊 Total Records Found in Database: {len(df_stock)} rows")
-
-    tab1, tab2 = st.tabs(["✍️ Single Entry Manual Mode", "📁 Bulk Excel/CSV Manifest Load"])
+        st.download_button(label="📥 Download Complete Stock Inward Ledger (CSV)", data=convert_df_to_csv(df_stock), file_name=f"Stock_Inward_Full_{date.today()}.csv", mime="text/csv", key="download_stock_full")
     
+    tab1, tab2 = st.tabs(["✍️ Single Entry Manual Mode", "📁 Bulk Excel/CSV Manifest Load"])
     with tab1:
         st.subheader("Add Single Stock Record")
         with st.form("single_inventory_form", clear_on_submit=True):
             p_code_list = sorted(list(df_prod["Product Code"].dropna().unique())) if not df_prod.empty else []
-            if p_code_list:
-                prod_input = st.selectbox("Select Product Code", p_code_list)
-            else:
-                prod_input = st.text_input("Enter Product Code Manually").strip().upper()
-                
+            prod_input = st.selectbox("Select Product Code", p_code_list) if p_code_list else st.text_input("Enter Product Code Manually").strip().upper()
             qty_input = st.number_input("Enter Added Quantity", min_value=1, step=1, value=1)
             submit_single = st.form_submit_button("🚀 Insert Record to Database")
-            
-            if submit_single:
-                if prod_input == "":
-                    st.error("Product Code blank nahi ho sakta!")
-                else:
-                    try:
-                        single_payload = {"product_code": prod_input, "added_qty": int(qty_input)}
-                        supabase.table("add_inventory").insert(single_payload).execute()
-                        clear_app_cache()
-                        st.success(f"Success! {qty_input} Qty added for {prod_input}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Database Error: {e}")
+            if submit_single and prod_input != "":
+                try:
+                    supabase.table("add_inventory").insert({"product_code": prod_input, "added_qty": int(qty_input)}).execute()
+                    clear_app_cache()
+                    st.success(f"Success! {qty_input} Qty added for {prod_input}")
+                    st.rerun()
+                except Exception as e: st.error(f"Database Error: {e}")
                         
     with tab2:
         st.subheader("Upload Bulk Inventory Log Sheet")
-        uploaded_inv_file = st.file_uploader("Choose manifest file", type=["xlsx", "csv"])
+        uploaded_inv_file = st.file_uploader("Choose manifest file", type=["xlsx", "csv"], key="inv_bulk")
         if uploaded_inv_file is not None:
             bulk_inv_df = pd.read_csv(uploaded_inv_file) if uploaded_inv_file.name.endswith('.csv') else pd.read_excel(uploaded_inv_file)
             if st.button("🚀 Process Bulk Stock Load"):
                 try:
                     bulk_inv_df.columns = ["product_code", "added_qty"][:len(bulk_inv_df.columns)]
-                    records = bulk_inv_df.to_dict(orient="records")
-                    supabase.table("add_inventory").insert(records).execute()
+                    supabase.table("add_inventory").insert(bulk_inv_df.to_dict(orient="records")).execute()
                     clear_app_cache()
                     st.success("Inventory Bulk Logs Added Successfully!")
                     st.rerun()
-                except Exception as e: 
-                    st.error(f"Error processing upload: {e}")
+                except Exception as e: st.error(f"Error processing upload: {e}")
             
     st.write("---")
-    st.subheader("Current Stock Inward Log Records Table")
     cols_to_view = [c for c in ["ID", "Product Code", "Added QTY", "Date & Time"] if c in df_stock.columns]
     st.dataframe(df_stock[cols_to_view], use_container_width=True, hide_index=True)
+
+# ==================== 📤 4. SALE DATA SHEET (UPGRADED SECTION WITH INPUTS) ====================
+elif menu == "📤 4. SALE DATA Sheet":
+    st.markdown("<h1>📤 Channel Sales Manifest Database Control</h1>", unsafe_allow_html=True)
+    
+    if not df_sales.empty:
+        st.download_button(
+            label="📥 Download Complete Channel Sales Manifest (CSV)",
+            data=convert_df_to_csv(df_sales),
+            file_name=f"Sales_Manifest_Full_{date.today()}.csv",
+            mime="text/csv",
+            key="download_sales_full"
+        )
+        st.caption(f"📊 Total Loaded Manifest Count: {len(df_sales)} rows")
+
+    # 🛠️ MANIFEST INPUT PORTS (TABS FOR DUAL MODES)
+    s_tab1, s_tab2 = st.tabs(["✍️ Single Sales Entry Mode", "📁 Bulk Sales Sheet Manifest Upload"])
+    
+    with s_tab1:
+        st.subheader("Add Single Channel Sale Record")
+        with st.form("single_sale_form", clear_on_submit=True):
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                sale_date = st.date_input("Order Date", date.today())
+                # Pull active mapped SKU dropdown list to ensure uniformity
+                channel_sku_list = sorted(list(df_map["Seller SKU on Channel"].dropna().unique())) if not df_map.empty else []
+                s_sku = st.selectbox("Select Channel SKU", channel_sku_list) if channel_sku_list else st.text_input("Enter Channel SKU").strip().upper()
+                s_type = st.selectbox("Order Type", ["SINGLE", "BUNDLE", "BUNDAL"])
+            with col_s2:
+                s_brand = st.selectbox("Brand Name", ["VIDA LOCA", "YUGNIK"])
+                s_qty = st.number_input("Order Quantity (Qty)", min_value=1, value=1, step=1)
+                
+            submit_sale_single = st.form_submit_button("🚀 Insert Sale Record")
+            
+            if submit_sale_single and s_sku != "":
+                try:
+                    sale_payload = {
+                        "date": sale_date.strftime("%Y-%m-%d"),
+                        "channel_sku": str(s_sku).strip().upper(),
+                        "type": str(s_type).strip().upper(),
+                        "brand": str(s_brand).strip().upper(),
+                        "qty": int(s_qty)
+                    }
+                    supabase.table("sale_data").insert(sale_payload).execute()
+                    clear_app_cache()
+                    st.success(f"Order Manifest Linked successfully for {s_sku}!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Database Error: {e}")
+                    
+    with s_tab2:
+        st.subheader("Upload Bulk Channel Sales Sheet")
+        st.info("⚠️ Required Columns in Excel/CSV: Date, Channel SKU, Type, Brand, Qty")
+        uploaded_sale_file = st.file_uploader("Choose sales file", type=["xlsx", "csv"], key="sales_bulk")
+        
+        if uploaded_sale_file is not None:
+            bulk_sales_df = pd.read_csv(uploaded_sale_file) if uploaded_sale_file.name.endswith('.csv') else pd.read_excel(uploaded_sale_file)
+            if st.button("🚀 Process Bulk Sales Upload"):
+                try:
+                    # Normalize columns mapping schema before insertion 
+                    bulk_sales_df.columns = [str(c).strip().lower() for c in bulk_sales_df.columns]
+                    rename_bulk = {}
+                    for c in bulk_sales_df.columns:
+                        if 'date' in c: rename_bulk[c] = 'date'
+                        elif 'sku' in c: rename_bulk[c] = 'channel_sku'
+                        elif 'type' in c: rename_bulk[c] = 'type'
+                        elif 'brand' in c: rename_bulk[c] = 'brand'
+                        elif 'qty' in c or 'quantity' in c: rename_bulk[c] = 'qty'
+                    
+                    bulk_sales_df = bulk_sales_df.rename(columns=rename_bulk)
+                    needed_cols = ['date', 'channel_sku', 'type', 'brand', 'qty']
+                    bulk_sales_df = bulk_sales_df[[col for col in needed_cols if col in bulk_sales_df.columns]]
+                    
+                    # Upload in standard batch records structure
+                    sales_records = bulk_sales_df.to_dict(orient="records")
+                    supabase.table("sale_data").insert(sales_records).execute()
+                    clear_app_cache()
+                    st.success("Bulk Sales Records Synchronized Successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Upload Error: {e}")
+
+    st.write("---")
+    st.subheader("Current Manifest Log Registry Table")
+    cols_to_display = [c for c in ["ID", "Date", "Channel SKU", "Type", "Brand", "Qty"] if c in df_sales.columns]
+    st.dataframe(df_sales[cols_to_display], use_container_width=True, hide_index=True)
 
 # ==================== OTHER PANELS ====================
 elif menu == "🔄 Live Channels Sync":
@@ -406,6 +461,3 @@ elif menu == "📦 1. MASTER SKU Sheet":
 elif menu == "🔗 2. CHANEL SKU MAP Sheet":
     st.markdown("<h1>🔗 Channel Mapping Matrix DB</h1>", unsafe_allow_html=True)
     st.dataframe(df_map, use_container_width=True, hide_index=True)
-elif menu == "📤 4. SALE DATA Sheet":
-    st.markdown("<h1>📤 Channel Sales Manifest DB</h1>", unsafe_allow_html=True)
-    st.dataframe(df_sales, use_container_width=True, hide_index=True)
