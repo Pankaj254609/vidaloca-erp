@@ -37,7 +37,10 @@ def init_supabase() -> Client:
     key = st.secrets["supabase"]["key"]
     return create_client(url, key)
 
-supabase = init_supabase()
+try:
+    supabase = init_supabase()
+except Exception as e:
+    st.error(f"Supabase Client Connection Error: {e}")
 
 # --- LIVE DATABASE DATA LOADING ---
 def load_data_cached():
@@ -46,7 +49,9 @@ def load_data_cached():
         res_p = supabase.table("master_sku").select("*").execute()
         df_p = pd.DataFrame(res_p.data)
         if not df_p.empty:
-            df_p.columns = ["Category Code", "Product Code", "Name", "Scan Identifier", "Color", "Size", "Brand", "Type", "Component Product Code", "QTY", "Image URL"]
+            actual_cols = ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"]
+            df_p = df_p[[c for c in actual_cols if c in df_p.columns]]
+            df_p.columns = ["Category Code", "Product Code", "Name", "Scan Identifier", "Color", "Size", "Brand", "Type", "Component Product Code", "QTY", "Image URL"][:len(df_p.columns)]
     except Exception as e:
         df_p = pd.DataFrame()
         
@@ -58,8 +63,8 @@ def load_data_cached():
         res_m = supabase.table("channel_sku_map").select("*").execute()
         df_m = pd.DataFrame(res_m.data)
         if not df_m.empty:
-            df_m = df_m.drop(columns=["id"], errors="ignore")
-            df_m.columns = ["Seller SKU on Channel", "SKU Code", "channelName", "PACK OF", "BRAND"]
+            df_m = df_m.drop(columns=["id", "created_at"], errors="ignore")
+            df_m.columns = ["Seller SKU on Channel", "SKU Code", "channelName", "PACK OF", "BRAND"][:len(df_m.columns)]
     except Exception as e:
         df_m = pd.DataFrame()
         
@@ -71,8 +76,8 @@ def load_data_cached():
         res_sa = supabase.table("sale_data").select("*").execute()
         df_sa = pd.DataFrame(res_sa.data)
         if not df_sa.empty:
-            df_sa = df_sa.drop(columns=["id"], errors="ignore")
-            df_sa.columns = ["Date", "Channel SKU", "Type", "BRAND", "QTY"]
+            df_sa = df_sa.drop(columns=["id", "created_at"], errors="ignore")
+            df_sa.columns = ["Date", "Channel SKU", "Type", "BRAND", "QTY"][:len(df_sa.columns)]
     except Exception as e:
         df_sa = pd.DataFrame()
         
@@ -84,8 +89,8 @@ def load_data_cached():
         res_st = supabase.table("add_inventory").select("*").execute()
         df_st = pd.DataFrame(res_st.data)
         if not df_st.empty:
-            df_st = df_st.drop(columns=["id"], errors="ignore")
-            df_st.columns = ["Date & Time", "Product Code", "Added QTY"]
+            df_st = df_st.drop(columns=["id", "created_at"], errors="ignore")
+            df_st.columns = ["Date & Time", "Product Code", "Added QTY"][:len(df_st.columns)]
     except Exception as e:
         df_st = pd.DataFrame()
         
@@ -102,12 +107,6 @@ def clean_sku(val):
     s = str(val).strip().upper()
     if s.endswith('.0'): s = s[:-2]
     return s
-
-def find_column(df, possible_names, default_name):
-    for col in df.columns:
-        if str(col).strip().lower() in [p.lower() for p in possible_names]:
-            return col
-    return default_name
 
 # --- INVENTORY CALCULATION ---
 def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="All", ignore_date=False):
@@ -225,7 +224,9 @@ def get_datewise_summary_cached(start_date, end_date, selected_brand="All", igno
                 p_code = clean_sku(row["Product Code"])
                 if p_code in allowed_products:
                     d_only = row['Date_Only']
-                    inward_by_date[d_only] = inward_by_date.get(d_only, 0) + int(row["Added QTY"])
+                    try: added_qty = int(row["Added QTY"])
+                    except: added_qty = 0
+                    inward_by_date[d_only] = inward_by_date.get(d_only, 0) + added_qty
         except: pass
 
     sales_by_date = {}
@@ -317,15 +318,15 @@ if menu == "📊 Live Dashboard":
     end_d = st.sidebar.date_input("End Date", today)
     ignore_date = st.sidebar.checkbox("Ignore Date Filter (Show All-Time Sales)", value=True)
     
-    all_brands = ["All"] + list(df_prod['Brand'].dropna().unique()) if not df_prod.empty else ["All"]
+    all_brands = ["All"] + list(df_prod['Brand'].dropna().unique()) if not df_prod.empty and 'Brand' in df_prod.columns else ["All"]
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
     
     df_actual = get_actual_inventory_cached(start_date=start_d, end_date=end_d, selected_brand=selected_brand, ignore_date=ignore_date)
         
     m_col1, m_col2, m_col3 = st.columns(3)
-    with m_col1: st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Total Inward Stock</div><div class="metric-value">{int(df_actual["Total Inward Stock"].sum())}</div></div>', unsafe_allow_html=True)
-    with m_col2: st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Sale QTY</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum())}</div></div>', unsafe_allow_html=True)
-    with m_col3: st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum())}</div></div>', unsafe_allow_html=True)
+    with m_col1: st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Total Inward Stock</div><div class="metric-value">{int(df_actual["Total Inward Stock"].sum()) if "Total Inward Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
+    with m_col2: st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Sale QTY</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum()) if "Total Sold QTY" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
+    with m_col3: st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum()) if "Actual Balance Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
     
     st.write("---")
     df_date_summary = get_datewise_summary_cached(start_d, end_d, selected_brand=selected_brand, ignore_date=ignore_date)
@@ -375,21 +376,13 @@ elif menu == "📦 1. MASTER SKU Sheet":
             st.dataframe(bulk_df.head(), hide_index=True)
             if st.button("🚀 Push All Records To Cloud DB"):
                 try:
-                    # Clear/Standardize columns name to match db schema
-                    bulk_df.columns = ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"]
+                    bulk_df.columns = ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"][:len(bulk_df.columns)]
                     
-                    # 🔥 NaN/Blank values safely clean logic
-                    bulk_df["category_code"] = bulk_df["category_code"].fillna("").astype(str)
-                    bulk_df["product_code"] = bulk_df["product_code"].fillna("").astype(str).str.upper().str.strip()
-                    bulk_df["name"] = bulk_df["name"].fillna("").astype(str)
-                    bulk_df["scan_identifier"] = bulk_df["scan_identifier"].fillna("").astype(str)
-                    bulk_df["color"] = bulk_df["color"].fillna("").astype(str)
-                    bulk_df["size"] = bulk_df["size"].fillna("").astype(str)
-                    bulk_df["brand"] = bulk_df["brand"].fillna("Vida Loca").astype(str)
-                    bulk_df["type"] = bulk_df["type"].fillna("SIMPLE").astype(str)
-                    bulk_df["component_product_code"] = bulk_df["component_product_code"].fillna("").astype(str)
-                    bulk_df["qty"] = bulk_df["qty"].fillna(0).astype(int)
-                    bulk_df["image_url"] = bulk_df["image_url"].fillna("").astype(str)
+                    for c in ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "image_url"]:
+                        if c in bulk_df.columns:
+                            bulk_df[c] = bulk_df[c].fillna("").astype(str)
+                    if "qty" in bulk_df.columns:
+                        bulk_df["qty"] = pd.to_numeric(bulk_df["qty"], errors='coerce').fillna(0).astype(int)
 
                     supabase.table("master_sku").delete().neq("product_code", "000").execute()
                     records = bulk_df.to_dict(orient="records")
@@ -398,7 +391,7 @@ elif menu == "📦 1. MASTER SKU Sheet":
                     st.success("Master dataset pushed permanently to Supabase!")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Database sync failed. Please check table structure: {e}")
+                    st.error(f"Database sync failed: {e}")
     with tab2:
         with st.form("master_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
@@ -436,12 +429,13 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
         bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         if st.button("🚀 Overwrite Mapping DB Table"):
             try:
-                bulk_df.columns = ["seller_sku_on_channel", "sku_code", "channel_name", "pack_of", "brand"]
+                bulk_df.columns = ["seller_sku_on_channel", "sku_code", "channel_name", "pack_of", "brand"][:len(bulk_df.columns)]
                 
-                # Handling Blanks inside mapping columns
                 for c in bulk_df.columns:
-                    if bulk_df[c].dtype == 'object': bulk_df[c] = bulk_df[c].fillna("")
-                    else: bulk_df[c] = bulk_df[c].fillna(1)
+                    if bulk_df[c].dtype == 'object': 
+                        bulk_df[c] = bulk_df[c].fillna("")
+                    else: 
+                        bulk_df[c] = bulk_df[c].fillna(1)
                 
                 supabase.table("channel_sku_map").delete().neq("sku_code", "000").execute()
                 records = bulk_df.to_dict(orient="records")
@@ -456,7 +450,6 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
 # ==================== 3. ADD INVENTORY SHEET ====================
 elif menu == "📥 3. ADD INVENTORY Sheet":
     st.markdown("<h1>📥 Stock Inward Ledger Database Panel</h1>", unsafe_allow_html=True)
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     inv_tab1, inv_tab2 = st.tabs(["📁 Bulk Inventory Upload", "✍️ Matrix Entry"])
 
     with inv_tab1:
@@ -466,11 +459,11 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
             st.dataframe(bulk_inv_df.head(), hide_index=True)
             if st.button("🚀 Process Bulk Stock Load"):
                 try:
-                    bulk_inv_df.columns = ["Product Code", "Added QTY"]
-                    bulk_inv_df["Product Code"] = bulk_inv_df["Product Code"].fillna("").astype(str)
-                    bulk_inv_df["Added QTY"] = bulk_inv_df["Added QTY"].fillna(0).astype(int)
+                    bulk_inv_df.columns = ["product_code", "added_qty"][:len(bulk_inv_df.columns)]
+                    bulk_inv_df["product_code"] = bulk_inv_df["product_code"].fillna("").astype(str)
+                    bulk_inv_df["added_qty"] = pd.to_numeric(bulk_inv_df["added_qty"], errors='coerce').fillna(0).astype(int)
                     
-                    records = [{"product_code": str(r["Product Code"]), "added_qty": int(r["Added QTY"])} for _, r in bulk_inv_df.iterrows()]
+                    records = bulk_inv_df.to_dict(orient="records")
                     supabase.table("add_inventory").insert(records).execute()
                     clear_app_cache()
                     st.success("Stock loaded permanently into cloud storage.")
@@ -479,42 +472,47 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
                     st.error(f"Stock upload error: {e}")
 
     with inv_tab2:
-        unique_names = sorted(list(df_prod['Name'].dropna().unique())) if not df_prod.empty else []
-        selected_name = st.selectbox("👗 Select Product Description", unique_names)
-        filtered_by_name = df_prod[df_prod['Name'] == selected_name]
-        available_colors = sorted(list(filtered_by_name['Color'].dropna().unique()))
-        selected_color = st.selectbox("🎨 Select Color", available_colors)
-        final_meta = filtered_by_name[filtered_by_name['Color'] == selected_color]
-        
-        if not final_meta.empty:
-            base_code_sample = final_meta['Product Code'].iloc[0]
-            base_design_prefix = base_code_sample.split('-')[0] if '-' in str(base_code_sample) else base_code_sample
+        unique_names = sorted(list(df_prod['Name'].dropna().unique())) if not df_prod.empty and 'Name' in df_prod.columns else []
+        if unique_names:
+            selected_name = st.selectbox("👗 Select Product Description", unique_names)
+            filtered_by_name = df_prod[df_prod['Name'] == selected_name]
+            available_colors = sorted(list(filtered_by_name['Color'].dropna().unique())) if 'Color' in filtered_by_name.columns else []
             
-            size_cols = st.columns(7)
-            q_xs = size_cols[0].number_input("XS QTY", min_value=0, value=0)
-            q_s  = size_cols[1].number_input("S QTY", min_value=0, value=0)
-            q_m  = size_cols[2].number_input("M QTY", min_value=0, value=0)
-            q_l  = size_cols[3].number_input("L QTY", min_value=0, value=0)
-            q_xl = size_cols[4].number_input("XL QTY", min_value=0, value=0)
-            q_2xl = size_cols[5].number_input("XXL QTY", min_value=0, value=0)
-            q_3xl = size_cols[6].number_input("3XL QTY", min_value=0, value=0)
-            
-            if st.button("🚀 Submit Multi-Size Batch Allocation"):
-                allocations = {"XS": q_xs, "S": q_s, "M": q_m, "L": q_l, "XL": q_xl, "XXL": q_2xl, "3XL": q_3xl}
-                db_records = []
-                for sz, qty_input in allocations.items():
-                    if qty_input > 0:
-                        target_sku_variant = f"{base_design_prefix}-{sz}"
-                        db_records.append({"product_code": target_sku_variant, "added_qty": int(qty_input)})
-                if db_records:
-                    try:
-                        supabase.table("add_inventory").insert(db_records).execute()
-                        clear_app_cache()
-                        st.success("Batch sizes submitted successfully!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error matrix insert: {e}")
+            if available_colors:
+                selected_color = st.selectbox("🎨 Select Color", available_colors)
+                final_meta = filtered_by_name[filtered_by_name['Color'] == selected_color]
+                
+                if not final_meta.empty and 'Product Code' in final_meta.columns:
+                    base_code_sample = final_meta['Product Code'].iloc[0]
+                    base_design_prefix = base_code_sample.split('-')[0] if '-' in str(base_code_sample) else base_code_sample
                     
+                    size_cols = st.columns(7)
+                    q_xs = size_cols[0].number_input("XS QTY", min_value=0, value=0)
+                    q_s  = size_cols[1].number_input("S QTY", min_value=0, value=0)
+                    q_m  = size_cols[2].number_input("M QTY", min_value=0, value=0)
+                    q_l  = size_cols[3].number_input("L QTY", min_value=0, value=0)
+                    q_xl = size_cols[4].number_input("XL QTY", min_value=0, value=0)
+                    q_2xl = size_cols[5].number_input("XXL QTY", min_value=0, value=0)
+                    q_3xl = size_cols[6].number_input("3XL QTY", min_value=0, value=0)
+                    
+                    if st.button("🚀 Submit Multi-Size Batch Allocation"):
+                        allocations = {"XS": q_xs, "S": q_s, "M": q_m, "L": q_l, "XL": q_xl, "XXL": q_2xl, "3XL": q_3xl}
+                        db_records = []
+                        for sz, qty_input in allocations.items():
+                            if qty_input > 0:
+                                target_sku_variant = f"{base_design_prefix}-{sz}"
+                                db_records.append({"product_code": target_sku_variant, "added_qty": int(qty_input)})
+                        if db_records:
+                            try:
+                                supabase.table("add_inventory").insert(db_records).execute()
+                                clear_app_cache()
+                                st.success("Batch sizes submitted successfully!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error matrix insert: {e}")
+        else:
+            st.warning("Master SKU list is empty! Matrix allocation ke liye pehle tab 1 se bulk master upload karein.")
+                        
     st.write("---")
     st.dataframe(df_stock, use_container_width=True, hide_index=True)
 
@@ -526,13 +524,14 @@ elif menu == "📤 4. SALE DATA Sheet":
         bulk_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         if st.button("🚀 Push Live Sales Manifest"):
             try:
-                bulk_df.columns = ["date", "channel_sku", "type", "brand", "qty"]
-                bulk_df['date'] = pd.to_datetime(bulk_df['date']).dt.strftime('%Y-%m-%d')
+                bulk_df.columns = ["date", "channel_sku", "type", "brand", "qty"][:len(bulk_df.columns)]
+                bulk_df['date'] = pd.to_datetime(bulk_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                bulk_df['date'] = bulk_df['date'].fillna(datetime.now().strftime('%Y-%m-%d'))
                 
                 bulk_df["channel_sku"] = bulk_df["channel_sku"].fillna("").astype(str)
                 bulk_df["type"] = bulk_df["type"].fillna("SINGLE").astype(str)
                 bulk_df["brand"] = bulk_df["brand"].fillna("VIDA LOCA").astype(str)
-                bulk_df["qty"] = bulk_df["qty"].fillna(0).astype(int)
+                bulk_df["qty"] = pd.to_numeric(bulk_df["qty"], errors='coerce').fillna(0).astype(int)
 
                 records = bulk_df.to_dict(orient="records")
                 supabase.table("sale_data").insert(records).execute()
