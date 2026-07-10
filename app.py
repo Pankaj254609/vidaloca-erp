@@ -3,7 +3,6 @@ import pandas as pd
 import random
 from datetime import datetime, date
 from supabase import create_client, Client
-import io
 
 # --- Theme Configuration ---
 st.set_page_config(page_title="Vida Loca Advanced ERP", layout="wide")
@@ -28,7 +27,6 @@ st.markdown("""
         border-radius: 8px !important; padding: 8px 24px !important; font-weight: 600 !important; border: none !important;
     }
     .stButton>button:hover { background-color: #2563eb !important; }
-    .download-btn { margin-bottom: 15px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -44,15 +42,13 @@ try:
 except Exception as e:
     st.error(f"Supabase Client Connection Error: {e}")
 
-# --- LIVE DATABASE DATA LOADING WITH AUTO-BATCHING FOR COMPLETE DATA ---
+# --- SUPER FAST DATA FETCH WITH OPTIMIZED CHUNKING & CACHING ---
+@st.cache_data(ttl=600, show_spinner="⚡ Cloud Database se Data Fast Fetch ho raha hai...")
 def load_data_cached():
-    def fetch_all_rows(table_name):
+    def fetch_all_rows_fast(table_name):
         all_data = []
         start = 0
-        limit = 1000  # Supabase internal limit per page
-        
-        # Ek status placeholder taaki load hote waqt user ko dikhe
-        status_placeholder = st.empty()
+        limit = 4000  # Efficient big chunk to reduce network API roundtrips
         
         while True:
             try:
@@ -60,24 +56,17 @@ def load_data_cached():
                 if not res.data or len(res.data) == 0:
                     break
                 all_data.extend(res.data)
-                
-                # Agar data 5,000 se zyada ho raha ho toh screen par count update karein
-                if len(all_data) % 5000 == 0 or len(res.data) < limit:
-                    status_placeholder.caption(f"⏳ {table_name} se {len(all_data)} rows successfully fetch ho chuki hain...")
-                
                 if len(res.data) < limit:
                     break
                 start += limit
             except Exception as e:
-                st.error(f"Error fetching data from {table_name}: {e}")
+                st.error(f"Error fetching from {table_name}: {e}")
                 break
-        
-        status_placeholder.empty() # Data fetch hone ke baad message clear karein
         return pd.DataFrame(all_data)
 
     # 1. Master SKU Fetch
     try:
-        df_p = fetch_all_rows("master_sku")
+        df_p = fetch_all_rows_fast("master_sku")
         if not df_p.empty:
             actual_cols = ["category_code", "product_code", "name", "scan_identifier", "color", "size", "brand", "type", "component_product_code", "qty", "image_url"]
             df_p = df_p[[c for c in actual_cols if c in df_p.columns]]
@@ -89,7 +78,7 @@ def load_data_cached():
 
     # 2. Mapping Matrix Fetch
     try:
-        df_m = fetch_all_rows("channel_sku_map")
+        df_m = fetch_all_rows_fast("channel_sku_map")
         if not df_m.empty:
             df_m = df_m.drop(columns=["id", "created_at"], errors="ignore")
             df_m.columns = ["Seller SKU on Channel", "SKU Code", "channelName", "PACK OF", "BRAND"][:len(df_m.columns)]
@@ -98,9 +87,9 @@ def load_data_cached():
     if df_m.empty:
         df_m = pd.DataFrame(columns=["Seller SKU on Channel", "SKU Code", "channelName", "PACK OF", "BRAND"])
 
-    # 3. Sales Fetch & Robust Header Uniformity
+    # 3. Sales Fetch with String Header Uniformity
     try:
-        df_sa = fetch_all_rows("sale_data")
+        df_sa = fetch_all_rows_fast("sale_data")
         if not df_sa.empty:
             df_sa = df_sa.drop(columns=["id", "created_at"], errors="ignore")
             df_sa.columns = [str(c).strip().upper() for c in df_sa.columns]
@@ -120,7 +109,7 @@ def load_data_cached():
 
     # 4. Stock Fetch
     try:
-        df_st = fetch_all_rows("add_inventory")
+        df_st = fetch_all_rows_fast("add_inventory")
         if not df_st.empty:
             df_st = df_st.drop(columns=["id", "created_at"], errors="ignore")
             df_st.columns = ["Date & Time", "Product Code", "Added QTY"][:len(df_st.columns)]
@@ -140,7 +129,6 @@ def clean_sku(val):
     if s.endswith('.0'): s = s[:-2]
     return s
 
-# --- EXCEL / CSV CONVERSION HELPER FOR LARGE DOWNLOADS ---
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
@@ -375,7 +363,6 @@ elif menu == "🔄 Live Channels Sync":
 elif menu == "📦 1. MASTER SKU Sheet":
     st.markdown("<h1>📦 Master Inventory DB Records</h1>", unsafe_allow_html=True)
     
-    # ⬇️ PURE DATA EXPORT BUTTON FOR MASTER SKU
     if not df_prod.empty:
         st.download_button(
             label="📥 Download Complete Master SKU Sheet (CSV)",
@@ -409,7 +396,6 @@ elif menu == "📦 1. MASTER SKU Sheet":
 elif menu == "🔗 2. CHANEL SKU MAP Sheet":
     st.markdown("<h1>🔗 Channel Mapping Matrix DB</h1>", unsafe_allow_html=True)
     
-    # ⬇️ PURE DATA EXPORT BUTTON FOR CHANNEL MAPPING (6 LAKH ROWS SAFE DOWNLOAD)
     if not df_map.empty:
         st.download_button(
             label="📥 Download Complete Channel SKU Map (CSV)",
@@ -441,7 +427,6 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
 elif menu == "📥 3. ADD INVENTORY Sheet":
     st.markdown("<h1>📥 Stock Inward Ledger Database Panel</h1>", unsafe_allow_html=True)
     
-    # ⬇️ PURE DATA EXPORT BUTTON FOR INVENTORY STOCK
     if not df_stock.empty:
         st.download_button(
             label="📥 Download Complete Stock Inward Ledger (CSV)",
@@ -471,7 +456,6 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
 elif menu == "📤 4. SALE DATA Sheet":
     st.markdown("<h1>📤 Channel Sales Manifest DB</h1>", unsafe_allow_html=True)
     
-    # ⬇️ PURE DATA EXPORT BUTTON FOR SALE DATA
     if not df_sales.empty:
         st.download_button(
             label="📥 Download Complete Sale Data Manifest (CSV)",
