@@ -310,8 +310,14 @@ if menu == "📊 Live Dashboard":
     
     df_actual = get_actual_inventory_cached(start_date=start_d, end_date=end_d, selected_brand=selected_brand, ignore_date=ignore_date)
     
+    # ⚡ DIRECT PURE DATAFRAME TOTAL CALCULATION WITH TYPECASTING TO FIX THE 1003 ISSUE
     if not df_sales.empty:
         df_sales_filtered = df_sales.copy()
+        
+        # Force numeric types to prevent object-concatenation errors during chunking
+        if "Qty" in df_sales_filtered.columns:
+            df_sales_filtered["Qty"] = pd.to_numeric(df_sales_filtered["Qty"], errors='coerce').fillna(0).astype(int)
+            
         if not ignore_date:
             try:
                 df_sales_filtered['Parsed_Date'] = pd.to_datetime(df_sales_filtered["Date"], errors='coerce').dt.date
@@ -321,8 +327,7 @@ if menu == "📊 Live Dashboard":
         if selected_brand != "All" and "Brand" in df_sales_filtered.columns:
             df_sales_filtered = df_sales_filtered[df_sales_filtered["Brand"].astype(str).str.upper() == selected_brand.upper()]
             
-        try: total_sales_display = int(df_sales_filtered["Qty"].fillna(0).astype(int).sum())
-        except: total_sales_display = 0
+        total_sales_display = int(df_sales_filtered["Qty"].sum())
     else:
         total_sales_display = 0
 
@@ -330,6 +335,7 @@ if menu == "📊 Live Dashboard":
     with m_col1: 
         st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Total Inward Stock</div><div class="metric-value">{int(df_actual["Total Inward Stock"].sum()) if "Total Inward Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
     with m_col2: 
+        # Ab yeh proper loop appended full data dataframe ka sum nikalega bina filter tute
         st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Sale QTY</div><div class="metric-value">{total_sales_display}</div></div>', unsafe_allow_html=True)
     with m_col3: 
         st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum()) if "Actual Balance Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
