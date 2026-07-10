@@ -213,7 +213,6 @@ def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="
 
 def get_datewise_summary_cached(start_date, end_date, selected_brand="All", ignore_date=False):
     df_p, df_m, df_sa, df_st = load_data_cached()
-    allowed_products = set(df_p["Product Code"].astype(str).str.strip().str.upper().values) if not df_p.empty else set()
     
     inward_by_date = {}
     if not df_st.empty:
@@ -223,12 +222,10 @@ def get_datewise_summary_cached(start_date, end_date, selected_brand="All", igno
             if not ignore_date:
                 df_filtered_st = df_filtered_st[(df_filtered_st['Date_Only'] >= start_date) & (df_filtered_st['Date_Only'] <= end_date)]
             for _, row in df_filtered_st.iterrows():
-                p_code = clean_sku(row["Product Code"])
-                if p_code in allowed_products:
-                    d_only = row['Date_Only']
-                    try: added_qty = int(row["Added QTY"])
-                    except: added_qty = 0
-                    inward_by_date[d_only] = inward_by_date.get(d_only, 0) + added_qty
+                d_only = row['Date_Only']
+                try: added_qty = int(row["Added QTY"])
+                except: added_qty = 0
+                inward_by_date[d_only] = inward_by_date.get(d_only, 0) + added_qty
         except: pass
 
     sales_by_date = {}
@@ -236,26 +233,18 @@ def get_datewise_summary_cached(start_date, end_date, selected_brand="All", igno
         try:
             df_sa['Date_Only'] = pd.to_datetime(df_sa["Date"], errors='coerce').dt.date
             df_filtered_sa = df_sa[df_sa['Date_Only'].notna()]
+            
             if not ignore_date:
                 df_filtered_sa = df_filtered_sa[(df_filtered_sa['Date_Only'] >= start_date) & (df_filtered_sa['Date_Only'] <= end_date)]
+            
             if selected_brand != "All" and "BRAND" in df_filtered_sa.columns:
                 df_filtered_sa = df_filtered_sa[df_filtered_sa["BRAND"].astype(str).str.upper() == selected_brand.upper()]
             
-            chanel_map = {}
-            if not df_m.empty:
-                for _, m_row in df_m.iterrows():
-                    chanel_map[clean_sku(m_row["Seller SKU on Channel"])] = clean_sku(m_row["SKU Code"])
-
             for _, sale in df_filtered_sa.iterrows():
-                sku_input = clean_sku(sale["Channel SKU"])
                 try: s_qty = int(sale["QTY"]) if pd.notna(sale["QTY"]) else 0
                 except: s_qty = 0
                 d_only = sale['Date_Only']
-                sale_type = str(sale["Type"]).strip().upper() if pd.notna(sale["Type"]) else "SINGLE"
-                
-                is_valid = True  # Adjusted validation pipeline dynamically
-                if is_valid:
-                    sales_by_date[d_only] = sales_by_date.get(d_only, 0) + s_qty
+                sales_by_date[d_only] = sales_by_date.get(d_only, 0) + s_qty
         except: pass
 
     all_dates = sorted(list(set(list(inward_by_date.keys()) + list(sales_by_date.keys()))))
@@ -315,7 +304,7 @@ if menu == "📊 Live Dashboard":
     end_d = st.sidebar.date_input("End Date", today)
     ignore_date = st.sidebar.checkbox("Ignore Date Filter (Show All-Time Sales)", value=True)
     
-    # Dynamic Brand Extraction via Sales Manifest Database Table
+    # 1. Dynamic Brand Extraction direct Sales Table se (Strictly Case Insensitive)
     if not df_sales.empty and "BRAND" in df_sales.columns:
         all_brands = ["All"] + sorted(list(df_sales['BRAND'].dropna().astype(str).str.upper().unique()))
     elif not df_prod.empty and 'Brand' in df_prod.columns:
@@ -326,11 +315,35 @@ if menu == "📊 Live Dashboard":
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
     
     df_actual = get_actual_inventory_cached(start_date=start_d, end_date=end_d, selected_brand=selected_brand, ignore_date=ignore_date)
+    
+    # 2. FILTER-WISE DIRECT QUANTITY CALCULATION FROM DATABASE
+    if not df_sales.empty:
+        df_sales_filtered = df_sales.copy()
         
+        # Apply Date Filter if not ignored
+        if not ignore_date:
+            try:
+                df_sales_filtered['Parsed_Date'] = pd.to_datetime(df_sales_filtered["Date"], errors='coerce').dt.date
+                df_sales_filtered = df_sales_filtered[(df_sales_filtered['Parsed_Date'] >= start_d) & (df_sales_filtered['Parsed_Date'] <= end_d)]
+            except: pass
+            
+        # Apply Brand Filter Dynamically
+        if selected_brand != "All" and "BRAND" in df_sales_filtered.columns:
+            df_sales_filtered = df_sales_filtered[df_sales_filtered["BRAND"].astype(str).str.upper() == selected_brand.upper()]
+            
+        try: total_sales_display = int(df_sales_filtered["QTY"].fillna(0).astype(int).sum())
+        except: total_sales_display = 0
+    else:
+        total_sales_display = 0
+
+    # 3. METRIC CARDS DISPLAY
     m_col1, m_col2, m_col3 = st.columns(3)
-    with m_col1: st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Total Inward Stock</div><div class="metric-value">{int(df_actual["Total Inward Stock"].sum()) if "Total Inward Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
-    with m_col2: st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Sale QTY</div><div class="metric-value">{int(df_actual["Total Sold QTY"].sum()) if "Total Sold QTY" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
-    with m_col3: st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum()) if "Actual Balance Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
+    with m_col1: 
+        st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Total Inward Stock</div><div class="metric-value">{int(df_actual["Total Inward Stock"].sum()) if "Total Inward Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
+    with m_col2: 
+        st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Sale QTY</div><div class="metric-value">{total_sales_display}</div></div>', unsafe_allow_html=True)
+    with m_col3: 
+        st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum()) if "Actual Balance Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
     
     st.write("---")
     df_date_summary = get_datewise_summary_cached(start_d, end_d, selected_brand=selected_brand, ignore_date=ignore_date)
@@ -454,9 +467,17 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
             st.markdown("### 🗑️ Bulk Reset")
             if st.button("🔴 Clear All Connection Mappings"):
                 try:
-                    supabase.table("channel_sku_map").delete().neq("sku_code", "000_BYPASS").execute()
+                    status_text = st.empty()
+                    status_text.text("🗑️ Database ko safe chunks me saaf (wipe) kiya ja raha hai...")
+                    res_ids = supabase.table("channel_sku_map").select("id").execute()
+                    if res_ids.data:
+                        id_list = [row["id"] for row in res_ids.data]
+                        for k in range(0, len(id_list), 500):
+                            chunk_ids = id_list[k:k+500]
+                            supabase.table("channel_sku_map").delete().in_("id", chunk_ids).execute()
+                    status_text.empty()
                     clear_app_cache()
-                    st.success("Channel Mapping DB ka saara data bulk me clear ho gaya!")
+                    st.success("Channel Mapping DB completely cleared in safe batches!")
                     st.rerun()
                 except Exception as e: st.error(f"Error while wiping table: {e}")
                     
@@ -493,12 +514,15 @@ elif menu == "🔗 2. CHANEL SKU MAP Sheet":
                 if "channel_name" in bulk_df.columns: bulk_df["channel_name"] = bulk_df["channel_name"].fillna("").astype(str)
                 if "brand" in bulk_df.columns: bulk_df["brand"] = bulk_df["brand"].fillna("").astype(str)
                 
-                # SAFE INTEGRATION: Text (like 'SINGLE') inside integer columns will dynamically resolve to default integer (1)
                 if "pack_of" in bulk_df.columns:
                     bulk_df["pack_of"] = pd.to_numeric(bulk_df["pack_of"], errors='coerce').fillna(1).astype(int)
                 
-                status_text.text("🗑️ Purana database saaf (wipe) kiya ja raha hai...")
-                supabase.table("channel_sku_map").delete().neq("sku_code", "000").execute()
+                status_text.text("🗑️ Clearing old records safely...")
+                res_ids = supabase.table("channel_sku_map").select("id").execute()
+                if res_ids.data:
+                    id_list = [row["id"] for row in res_ids.data]
+                    for k in range(0, len(id_list), 500):
+                        supabase.table("channel_sku_map").delete().in_("id", id_list[k:k+500]).execute()
                 
                 records = bulk_df.to_dict(orient="records")
                 total_records = len(records)
