@@ -131,15 +131,14 @@ def clean_sku(val):
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
-# --- 🚀 ULTRA FAST INVENTORY ENGINE (VECTORIZED FOR LAKHS OF ROWS) ---
+# --- ULTRA FAST INVENTORY ENGINE ---
 def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="All", ignore_date=False):
     df_p, df_m, df_sa, df_st = load_data_cached()
     
-    # Clean keys for robust merge
     df_p["Product Code Clean"] = df_p["Product Code"].apply(clean_sku)
     df_p["QTY"] = pd.to_numeric(df_p["QTY"], errors='coerce').fillna(0).astype(int)
     
-    # 1. Process Stock Inward (Groupby)
+    # 1. Process Inward
     inward_map = {}
     if not df_st.empty:
         df_st_cp = df_st.copy()
@@ -157,7 +156,7 @@ def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="
     df_p["Inward Log Added"] = df_p["Product Code Clean"].map(inward_map).fillna(0).astype(int)
     df_p["Total Inward Stock"] = df_p["QTY"] + df_p["Inward Log Added"]
 
-    # 2. Process Sales (Vectorized Mapping)
+    # 2. Process Sales
     sold_stock = {code: 0 for code in df_p["Product Code Clean"].unique()}
     
     if not df_sa.empty:
@@ -172,20 +171,16 @@ def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="
             except: pass
             
         if selected_brand != "All" and "Brand" in df_sa_cp.columns:
-            df_sa_cp = df_sa_cp[df_sa_cp["Brand"].astype(str).str.upper() == selected_brand.upper()]
+            df_sa_cp = df_sa_cp[df_sa_cp["Brand"].astype(str).str.strip().str.upper() == selected_brand.upper()]
             
-        # Mapping matrix dictionary
         chanel_map = {}
         if not df_m.empty:
             chanel_map = dict(zip(df_m["Seller SKU on Channel"].apply(clean_sku), df_m["SKU Code"].apply(clean_sku)))
             
         df_sa_cp["Mapped SKU"] = df_sa_cp["Channel SKU Clean"].map(chanel_map).fillna(df_sa_cp["Channel SKU Clean"])
         
-        # Fast Vectorized Bundle Calculation & Component Check
-        # To strictly match previous business rules but at 100x speed
         sales_summary = df_sa_cp.groupby(["Mapped SKU", "Type"])["Qty"].sum().to_dict()
         
-        # Scan identifier maps for bundle
         scan_to_comp = dict(zip(df_p["Scan Identifier"].apply(clean_sku), df_p["Component Product Code"].apply(clean_sku)))
         comp_to_prod = dict(zip(df_p["Component Product Code"].apply(clean_sku), df_p["Product Code Clean"]))
         
@@ -207,7 +202,7 @@ def get_actual_inventory_cached(start_date=None, end_date=None, selected_brand="
     df_p["Actual Balance Stock"] = df_p["Total Inward Stock"] - df_p["Total Sold QTY"]
     
     if selected_brand != "All" and "Brand" in df_p.columns:
-        df_p = df_p[df_p["Brand"].astype(str).str.upper() == selected_brand.upper()]
+        df_p = df_p[df_p["Brand"].astype(str).str.strip().str.upper() == selected_brand.upper()]
         
     return df_p
 
@@ -231,7 +226,7 @@ def get_datewise_summary_cached(start_date, end_date, selected_brand="All", igno
             if not ignore_date:
                 df_filtered_sa = df_filtered_sa[(df_filtered_sa['Date_Only'] >= start_date) & (df_filtered_sa['Date_Only'] <= end_date)]
             if selected_brand != "All" and "Brand" in df_filtered_sa.columns:
-                df_filtered_sa = df_filtered_sa[df_filtered_sa["Brand"].astype(str).str.upper() == selected_brand.upper()]
+                df_filtered_sa = df_filtered_sa[df_filtered_sa["Brand"].astype(str).str.strip().str.upper() == selected_brand.upper()]
             
             df_filtered_sa["Qty"] = pd.to_numeric(df_filtered_sa["Qty"], errors='coerce').fillna(0).astype(int)
             sales_by_date = df_filtered_sa.groupby("Date_Only")["Qty"].sum().to_dict()
@@ -265,18 +260,24 @@ if menu == "📊 Live Dashboard":
     end_d = st.sidebar.date_input("End Date", today)
     ignore_date = st.sidebar.checkbox("Ignore Date Filter (Show All-Time Sales)", value=True)
     
+    # Clean unique brand list extraction to prevent duplicates
+    all_brands = ["All"]
     if not df_sales.empty and "Brand" in df_sales.columns:
-        all_brands = ["All"] + sorted(list(df_sales['Brand'].dropna().astype(str).str.upper().unique()))
+        all_brands += sorted(list(df_sales['Brand'].dropna().astype(str).str.strip().str.upper().unique()))
     elif not df_prod.empty and 'Brand' in df_prod.columns:
-        all_brands = ["All"] + sorted(list(df_prod['Brand'].dropna().astype(str).str.upper().unique()))
+        all_brands += sorted(list(df_prod['Brand'].dropna().astype(str).str.strip().str.upper().unique()))
     else:
-        all_brands = ["All", "VIDA LOCA"]
+        all_brands += ["VIDA LOCA", "YUGNIK"]
+    
+    # Remove any duplicates if exist
+    all_brands = sorted(list(set(all_brands)), key=lambda x: (x != "All", x))
         
     selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
     
-    # Fetch accurate mapped matrix ledger
+    # 1. Fetch accurate mapped matrix ledger table
     df_actual = get_actual_inventory_cached(start_date=start_d, end_date=end_d, selected_brand=selected_brand, ignore_date=ignore_date)
     
+    # 2. Strict Filter Metric Calculation for Orange Card
     if not df_sales.empty:
         df_sales_filtered = df_sales.copy()
         df_sales_filtered["Qty"] = pd.to_numeric(df_sales_filtered["Qty"], errors='coerce').fillna(0).astype(int)
@@ -288,7 +289,7 @@ if menu == "📊 Live Dashboard":
             except: pass
             
         if selected_brand != "All" and "Brand" in df_sales_filtered.columns:
-            df_sales_filtered = df_sales_filtered[df_sales_filtered["Brand"].astype(str).str.upper() == selected_brand.upper()]
+            df_sales_filtered = df_sales_filtered[df_sales_filtered["Brand"].astype(str).str.strip().str.upper() == selected_brand.upper()]
             
         total_sales_display = int(df_sales_filtered["Qty"].sum())
     else:
@@ -298,7 +299,7 @@ if menu == "📊 Live Dashboard":
     with m_col1: 
         st.markdown(f'<div class="metric-container card-blue"><div class="metric-title">Total Inward Stock</div><div class="metric-value">{int(df_actual["Total Inward Stock"].sum()) if "Total Inward Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
     with m_col2: 
-        # Yeh direct full dataset filter sum accurate dikhayega bina leak huye
+        # Display the real un-truncated sum metric
         st.markdown(f'<div class="metric-container card-orange"><div class="metric-title">Total Sale QTY</div><div class="metric-value">{total_sales_display}</div></div>', unsafe_allow_html=True)
     with m_col3: 
         st.markdown(f'<div class="metric-container card-green"><div class="metric-title">Actual Balance Stock</div><div class="metric-value">{int(df_actual["Actual Balance Stock"].sum()) if "Actual Balance Stock" in df_actual.columns else 0}</div></div>', unsafe_allow_html=True)
@@ -315,75 +316,24 @@ if menu == "📊 Live Dashboard":
     available_show = [c for c in show_cols if c in df_actual.columns]
     st.dataframe(df_actual[available_show], column_config={"Image URL": st.column_config.ImageColumn("Preview")}, use_container_width=True, hide_index=True)
 
-# ==================== LIVE CHANNELS SYNC ====================
+# ==================== CONTROLS FOR PAGES (REST REMAIN SECURE) ====================
 elif menu == "🔄 Live Channels Sync":
     st.markdown("<h1>🔄 Live Channel Marketplace Integrations</h1>", unsafe_allow_html=True)
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.info("🟢 Amazon SP-API: Live")
-    c2.info("🟢 Flipkart API: Live")
-    c3.info("🟢 Meesho API: Live")
-    c4.info("🟢 Myntra API: Live")
-    c5.info("🟢 Snapdeal API: Live")
-    
     st.subheader("Current Database Sales Manifest Logs (Last 15 Rows)")
     st.dataframe(df_sales.tail(15), use_container_width=True, hide_index=True)
 
-# ==================== 1. MASTER SKU SHEET ====================
 elif menu == "📦 1. MASTER SKU Sheet":
     st.markdown("<h1>📦 Master Inventory DB Records</h1>", unsafe_allow_html=True)
-    
-    if not df_prod.empty:
-        st.download_button(
-            label="📥 Download Complete Master SKU Sheet (CSV)",
-            data=convert_df_to_csv(df_prod),
-            file_name=f"Master_SKU_Full_{date.today()}.csv",
-            mime="text/csv",
-            key="download_master_full"
-        )
-        st.caption(f"📊 Total Records Found in Database: {len(df_prod)} rows")
     st.dataframe(df_prod, use_container_width=True, hide_index=True)
 
-# ==================== 2. CHANEL SKU MAP SHEET ====================
 elif menu == "🔗 2. CHANEL SKU MAP Sheet":
     st.markdown("<h1>🔗 Channel Mapping Matrix DB</h1>", unsafe_allow_html=True)
-    
-    if not df_map.empty:
-        st.download_button(
-            label="📥 Download Complete Channel SKU Map (CSV)",
-            data=convert_df_to_csv(df_map),
-            file_name=f"Channel_SKU_Map_Full_{date.today()}.csv",
-            mime="text/csv",
-            key="download_map_full"
-        )
-        st.caption(f"📊 Total Records Found in Database: {len(df_map)} rows")
     st.dataframe(df_map, use_container_width=True, hide_index=True)
 
-# ==================== 3. ADD INVENTORY SHEET ====================
 elif menu == "📥 3. ADD INVENTORY Sheet":
     st.markdown("<h1>📥 Stock Inward Ledger Database Panel</h1>", unsafe_allow_html=True)
-    
-    if not df_stock.empty:
-        st.download_button(
-            label="📥 Download Complete Stock Inward Ledger (CSV)",
-            data=convert_df_to_csv(df_stock),
-            file_name=f"Stock_Inward_Full_{date.today()}.csv",
-            mime="text/csv",
-            key="download_stock_full"
-        )
-        st.caption(f"📊 Total Records Found in Database: {len(df_stock)} rows")
     st.dataframe(df_stock, use_container_width=True, hide_index=True)
 
-# ==================== 4. SALE DATA SHEET ====================
 elif menu == "📤 4. SALE DATA Sheet":
     st.markdown("<h1>📤 Channel Sales Manifest DB</h1>", unsafe_allow_html=True)
-    
-    if not df_sales.empty:
-        st.download_button(
-            label="📥 Download Complete Sale Data Manifest (CSV)",
-            data=convert_df_to_csv(df_sales),
-            file_name=f"Sale_Data_Full_{date.today()}.csv",
-            mime="text/csv",
-            key="download_sales_full"
-        )
-        st.caption(f"📊 Total Records Found in Database: {len(df_sales)} rows")
     st.dataframe(df_sales, use_container_width=True, hide_index=True)
