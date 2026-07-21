@@ -1,5 +1,6 @@
 streamlit
-supabase
 pandas
-openpyxl
-
+supabase
+python-barcode
+qrcode
+Pillow
