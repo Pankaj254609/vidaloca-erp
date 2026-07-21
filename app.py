@@ -1,9 +1,10 @@
 import io
+import os
 import random
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
-# --- NEW IMPORTS FOR BARCODE & QR CODE GENERATION ---
 import barcode
 import pandas as pd
 import qrcode
@@ -557,7 +558,7 @@ if menu == "📊 Live Dashboard":
       hide_index=True,
   )
 
-# ==================== 📥 3. ADD INVENTORY SHEET (WITH SCANNER & GENERATOR) ====================
+# ==================== 📥 3. ADD INVENTORY SHEET (WITH AUTO-SCAN & BULK CODE GENERATION) ====================
 elif menu == "📥 3. ADD INVENTORY Sheet":
   st.markdown(
       "<h1>📥 Stock Inward Ledger & Barcode Engine</h1>", unsafe_allow_html=True
@@ -573,14 +574,18 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
     )
 
   tab1, tab2, tab3 = st.tabs([
-      "📸 Scan & Inward Stock",
-      "🖨️ Generate Barcode & QR Code",
-      "📁 Bulk Excel/CSV Manifest Load",
+      "📸 Auto-Push Scan & Inward",
+      "🖨️ Bulk Barcode & QR Generator",
+      "📁 Bulk Manifest Upload",
   ])
 
-  # TAB 1: SCANNER & MANUAL INWARD
+  # TAB 1: AUTO-PUSH SCANNER
   with tab1:
-    st.subheader("📷 Barcode / QR Code Scanner & Stock Inward")
+    st.subheader("📷 Automatic Scanner (Auto-Push to Inventory)")
+    st.caption(
+        "💡 **Tip:** Barcode gun se scan karne par item automatically database"
+        " me push ho jayega."
+    )
 
     brand_options = (
         sorted(list(df_prod["Brand"].dropna().unique()))
@@ -588,73 +593,132 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
         else ["VIDA LOCA", "YUGNIK"]
     )
     selected_inward_brand = st.selectbox(
-        "🏷️ Select Brand to Assign Stock", brand_options, key="scan_brand"
+        "🏷️ Select Brand for Inward", brand_options, key="auto_scan_brand"
     )
 
-    st.write("---")
-    st.markdown("### 🔍 Scan Barcode/QR Code via Hardware/Mobile Gun or Camera")
-
-    scanned_sku = st.text_input(
-        "⚡ Focus cursor here & Scan Barcode (Press Enter)", key="scanned_sku_input"
-    ).strip().upper()
     scan_qty = st.number_input(
-        "Quantity to Add", min_value=1, value=1, step=1, key="scan_qty"
+        "Quantity per Scan",
+        min_value=1,
+        value=1,
+        step=1,
+        key="auto_scan_qty",
     )
 
-    if st.button("🚀 Push Scanned Item to Inventory"):
-      if scanned_sku:
+    # Callback function for automatic execution when barcode scanner sends Enter key
+    def handle_auto_scan():
+      code = st.session_state.auto_scanned_code.strip().upper()
+      if code:
         try:
           supabase.table("add_inventory").insert({
-              "product_code": scanned_sku,
+              "product_code": code,
               "added_qty": int(scan_qty),
               "brand": str(selected_inward_brand).strip().upper(),
           }).execute()
           clear_app_cache()
-          st.success(
-              f"✅ Stock Added! {scan_qty} Qty of '{scanned_sku}' allocated to"
-              f" Brand: {selected_inward_brand}"
+          st.toast(
+              f"✅ Auto-Added: {scan_qty} Qty of '{code}' to"
+              f" {selected_inward_brand}!",
+              icon="🚀",
           )
-          st.rerun()
+          st.session_state.auto_scanned_code = ""  # Clear box after scan
         except Exception as e:
           st.error(f"Database Error: {e}")
-      else:
-        st.warning("Pehle Barcode Scan ya Enter kijiye!")
 
-  # TAB 2: GENERATE BARCODE & QR CODE
-  with tab2:
-    st.subheader("🖨️ Master SKU Barcode / QR Code Generator")
-
-    p_code_list = (
-        sorted(list(df_prod["Product Code"].dropna().unique()))
-        if not df_prod.empty
-        else []
+    st.text_input(
+        "⚡ Focus cursor here and scan SKU (Auto Push on Scan)",
+        key="auto_scanned_code",
+        on_change=handle_auto_scan,
     )
-    gen_sku = st.selectbox("Select Master SKU Product Code", p_code_list) if p_code_list else st.text_input("Enter SKU Code").strip().upper()
 
-    col_g1, col_g2 = st.columns(2)
+  # TAB 2: BULK BARCODE & QR GENERATOR
+  with tab2:
+    st.subheader("🖨️ Bulk Barcode & QR Code Generator (ZIP Download)")
 
-    if gen_sku:
-      with col_g1:
-        st.markdown("#### 🏷️ Barcode (Code128)")
-        barcode_bytes = generate_barcode_img(gen_sku)
-        st.image(barcode_bytes.getvalue(), caption=f"Barcode: {gen_sku}")
-        st.download_button(
-            label="📥 Download Barcode Image",
-            data=barcode_bytes,
-            file_name=f"Barcode_{gen_sku}.png",
-            mime="image/png",
+    gen_mode = st.radio(
+        "Select SKU Input Source",
+        [
+            "Select Master SKUs from Database",
+            "Upload Bulk SKU List (CSV/Excel)",
+        ],
+        horizontal=True,
+    )
+    skus_to_generate = []
+
+    if gen_mode == "Select Master SKUs from Database":
+      p_code_list = (
+          sorted(list(df_prod["Product Code"].dropna().unique()))
+          if not df_prod.empty
+          else []
+      )
+      skus_to_generate = st.multiselect(
+          "Choose SKUs to Generate Codes", p_code_list
+      )
+    else:
+      sku_file = st.file_uploader(
+          "Upload CSV/Excel containing 'Product Code' column",
+          type=["csv", "xlsx"],
+          key="bulk_sku_file",
+      )
+      if sku_file is not None:
+        file_df = (
+            pd.read_csv(sku_file)
+            if sku_file.name.endswith(".csv")
+            else pd.read_excel(sku_file)
         )
+        col_found = None
+        for col in file_df.columns:
+          if "product" in str(col).lower() or "sku" in str(col).lower():
+            col_found = col
+            break
+        if col_found:
+          skus_to_generate = (
+              file_df[col_found].dropna().astype(str).str.strip().tolist()
+          )
+          st.success(
+              f"✅ Extracted {len(skus_to_generate)} SKUs from column"
+              f" '{col_found}'"
+          )
+        else:
+          st.error("Pehle column me SKU / Product Code naam ka header ho!")
 
-      with col_g2:
-        st.markdown("#### 📱 QR Code")
-        qr_bytes = generate_qrcode_img(gen_sku)
-        st.image(qr_bytes.getvalue(), caption=f"QR Code: {gen_sku}")
-        st.download_button(
-            label="📥 Download QR Code Image",
-            data=qr_bytes,
-            file_name=f"QRCode_{gen_sku}.png",
-            mime="image/png",
-        )
+    col_btn1, col_btn2 = st.columns(2)
+
+    if skus_to_generate:
+      with col_btn1:
+        if st.button("📦 Generate Bulk Barcodes (ZIP)"):
+          zip_buffer = io.BytesIO()
+          with zipfile.ZipFile(
+              zip_buffer, "a", zipfile.ZIP_DEFLATED, False
+          ) as zip_file:
+            for sku in skus_to_generate:
+              clean_s = str(sku).strip().upper()
+              b_img = generate_barcode_img(clean_s)
+              zip_file.writestr(f"Barcode_{clean_s}.png", b_img.getvalue())
+          zip_buffer.seek(0)
+          st.download_button(
+              label="📥 Download Barcodes ZIP Archive",
+              data=zip_buffer,
+              file_name=f"Barcodes_Bulk_{date.today()}.zip",
+              mime="application/zip",
+          )
+
+      with col_btn2:
+        if st.button("📱 Generate Bulk QR Codes (ZIP)"):
+          zip_buffer = io.BytesIO()
+          with zipfile.ZipFile(
+              zip_buffer, "a", zipfile.ZIP_DEFLATED, False
+          ) as zip_file:
+            for sku in skus_to_generate:
+              clean_s = str(sku).strip().upper()
+              q_img = generate_qrcode_img(clean_s)
+              zip_file.writestr(f"QRCode_{clean_s}.png", q_img.getvalue())
+          zip_buffer.seek(0)
+          st.download_button(
+              label="📥 Download QR Codes ZIP Archive",
+              data=zip_buffer,
+              file_name=f"QRCodes_Bulk_{date.today()}.zip",
+              mime="application/zip",
+          )
 
   # TAB 3: BULK LOAD
   with tab3:
@@ -690,7 +754,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
   ]
   st.dataframe(df_stock[cols_to_view], use_container_width=True, hide_index=True)
 
-# ==================== 📤 4. SALE DATA SHEET (WITH SCANNER) ====================
+# ==================== 📤 4. SALE DATA SHEET (WITH AUTO SCAN) ====================
 elif menu == "📤 4. SALE DATA Sheet":
   st.markdown(
       "<h1>📤 Channel Sales Manifest Database Control</h1>",
@@ -707,51 +771,56 @@ elif menu == "📤 4. SALE DATA Sheet":
     )
 
   s_tab1, s_tab2, s_tab3 = st.tabs([
-      "📸 Scan & Add Sale",
+      "📸 Auto-Push Scan & Add Sale",
       "✍️ Manual Single Entry Mode",
       "📁 Bulk Sales Sheet Upload",
   ])
 
-  # TAB 1: SCAN & SALE
+  # TAB 1: AUTO-PUSH SCAN SALE
   with s_tab1:
-    st.subheader("📷 Barcode/QR Code Scanner for Direct Sale Deduction")
-
-    scanned_sale_sku = st.text_input(
-        "⚡ Focus cursor & Scan Channel SKU Barcode", key="scanned_sale_input"
-    ).strip().upper()
+    st.subheader("📷 Auto-Push Scanner for Channel Direct Sale")
 
     col_s1, col_s2 = st.columns(2)
     with col_s1:
       scan_sale_type = st.selectbox(
-          "Order Type", ["SINGLE", "BUNDLE", "BUNDAL"], key="scan_sale_type"
+          "Order Type", ["SINGLE", "BUNDLE", "BUNDAL"], key="auto_sale_type"
       )
       scan_sale_brand = st.selectbox(
-          "Brand Name", ["VIDA LOCA", "YUGNIK"], key="scan_sale_brand"
+          "Brand Name", ["VIDA LOCA", "YUGNIK"], key="auto_sale_brand"
       )
     with col_s2:
       scan_sale_qty = st.number_input(
-          "Qty Sold", min_value=1, value=1, step=1, key="scan_sale_qty"
+          "Qty Sold", min_value=1, value=1, step=1, key="auto_sale_qty"
       )
       scan_sale_date = st.date_input(
-          "Order Date", date.today(), key="scan_sale_date"
+          "Order Date", date.today(), key="auto_sale_date"
       )
 
-    if st.button("🚀 Push Scanned Sale Record"):
-      if scanned_sale_sku:
+    def handle_auto_sale_scan():
+      code = st.session_state.auto_sale_code.strip().upper()
+      if code:
         try:
           sale_payload = {
               "date": scan_sale_date.strftime("%Y-%m-%d"),
-              "channel_sku": scanned_sale_sku,
+              "channel_sku": code,
               "type": str(scan_sale_type).strip().upper(),
               "brand": str(scan_sale_brand).strip().upper(),
               "qty": int(scan_sale_qty),
           }
           supabase.table("sale_data").insert(sale_payload).execute()
           clear_app_cache()
-          st.success(f"Order Registered for Scanned SKU: {scanned_sale_sku}!")
-          st.rerun()
+          st.toast(
+              f"✅ Sale Deducted! {scan_sale_qty} Qty of '{code}'", icon="📦"
+          )
+          st.session_state.auto_sale_code = ""
         except Exception as e:
           st.error(f"Database Error: {e}")
+
+    st.text_input(
+        "⚡ Focus cursor here and scan Channel SKU Barcode",
+        key="auto_sale_code",
+        on_change=handle_auto_sale_scan,
+    )
 
   # TAB 2: MANUAL ENTRY
   with s_tab2:
