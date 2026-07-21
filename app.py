@@ -61,12 +61,21 @@ except Exception as e:
   st.error(f"Supabase Client Connection Error: {e}")
 
 
-# --- BARCODE & QR GENERATOR HELPER FUNCTIONS ---
+# --- HIGH RESOLUTION BARCODE & QR GENERATOR ---
 def generate_barcode_img(text):
   code128 = barcode.get_barcode_class("code128")
   rv = io.BytesIO()
+  # Writer options tuned for high clarity on PDF printouts
+  writer_options = {
+      "module_height": 10.0,
+      "quiet_zone": 2.0,
+      "font_size": 10,
+      "text_distance": 3.0,
+      "write_text": True,
+      "dpi": 300,
+  }
   code = code128(text, writer=ImageWriter())
-  code.write(rv)
+  code.write(rv, options=writer_options)
   rv.seek(0)
   return rv
 
@@ -74,9 +83,9 @@ def generate_barcode_img(text):
 def generate_qrcode_img(text):
   qr = qrcode.QRCode(
       version=1,
-      error_correction=qrcode.constants.ERROR_CORRECT_L,
+      error_correction=qrcode.constants.ERROR_CORRECT_M,  # Medium error correction for better scanning
       box_size=10,
-      border=4,
+      border=2,  # Compact border
   )
   qr.add_data(text)
   qr.make(fit=True)
@@ -87,16 +96,16 @@ def generate_qrcode_img(text):
   return rv
 
 
-# --- PDF GENERATOR HELPER FUNCTION WITH MULTIPLE QTY SUPPORT ---
+# --- PDF GENERATOR HELPER FUNCTION WITH OPTIMIZED SIZING ---
 def generate_codes_pdf(sku_qty_dict, code_type="barcode"):
   pdf_buffer = io.BytesIO()
   doc = SimpleDocTemplate(
       pdf_buffer,
       pagesize=A4,
-      rightMargin=15,
-      leftMargin=15,
-      topMargin=20,
-      bottomMargin=20,
+      rightMargin=10,
+      leftMargin=10,
+      topMargin=15,
+      bottomMargin=15,
   )
 
   elements = []
@@ -105,8 +114,8 @@ def generate_codes_pdf(sku_qty_dict, code_type="barcode"):
 
   # Grid Configuration: 3 Columns Layout
   cols = 3
-  img_w = 2.3 * inch
-  img_h = 1.1 * inch if code_type == "barcode" else 1.8 * inch
+  img_w = 2.4 * inch
+  img_h = 1.0 * inch if code_type == "barcode" else 1.8 * inch
 
   # Flatten the dictionary based on requested QTY
   expanded_sku_list = []
@@ -137,13 +146,13 @@ def generate_codes_pdf(sku_qty_dict, code_type="barcode"):
     data_matrix.append(current_row)
 
   if data_matrix:
-    t = Table(data_matrix, colWidths=[2.5 * inch] * cols)
+    t = Table(data_matrix, colWidths=[2.55 * inch] * cols)
     t.setStyle(
         TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-            ("TOPPADDING", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
         ])
     )
     elements.append(t)
@@ -352,6 +361,52 @@ def clean_sku(val):
 
 def convert_df_to_csv(df):
   return df.to_csv(index=False).encode("utf-8")
+
+
+# --- SMART SCAN TO MASTER SKU RESOLVER ---
+def resolve_to_master_sku(scanned_code, df_master, df_mapping):
+  """Lookup engine: Scanned Barcode/QR text ko Master SKU (Product Code) me convert karta hai."""
+  clean_input = clean_sku(scanned_code)
+  if not clean_input:
+    return ""
+
+  if not df_master.empty:
+    # 1. Check direct match with 'Product Code'
+    if "Product Code" in df_master.columns:
+      match = df_master[
+          df_master["Product Code"].apply(clean_sku) == clean_input
+      ]
+      if not match.empty:
+        return match.iloc[0]["Product Code"]
+
+    # 2. Check match with 'Scan Identifier'
+    if "Scan Identifier" in df_master.columns:
+      match = df_master[
+          df_master["Scan Identifier"].apply(clean_sku) == clean_input
+      ]
+      if not match.empty:
+        return match.iloc[0]["Product Code"]
+
+    # 3. Check match with 'Component Product Code'
+    if "Component Product Code" in df_master.columns:
+      match = df_master[
+          df_master["Component Product Code"].apply(clean_sku) == clean_input
+      ]
+      if not match.empty:
+        return match.iloc[0]["Product Code"]
+
+  # 4. Check via Channel SKU Mapping
+  if not df_mapping.empty and "Seller SKU on Channel" in df_mapping.columns:
+    match_map = df_mapping[
+        df_mapping["Seller SKU on Channel"].apply(clean_sku) == clean_input
+    ]
+    if not match_map.empty:
+      mapped_sku = clean_sku(match_map.iloc[0]["SKU Code"])
+      # Recursive check mapped code with Master
+      return resolve_to_master_sku(mapped_sku, df_master, pd.DataFrame())
+
+  # Default fallback: return cleaned input code
+  return clean_input
 
 
 # --- INVENTORY LEDGER ENGINE ---
@@ -649,12 +704,12 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
       "📁 Bulk Manifest Upload",
   ])
 
-  # TAB 1: AUTO-PUSH SCANNER
+  # TAB 1: AUTO-PUSH SCANNER (WITH MASTER SKU RESOLUTION)
   with tab1:
-    st.subheader("📷 Automatic Scanner (Auto-Push to Inventory)")
+    st.subheader("📷 Automatic Scanner (Auto-Push to Master SKU Inventory)")
     st.caption(
-        "💡 **Tip:** Barcode gun se scan karne par item automatically database"
-        " me push ho jayega."
+        "💡 **Smart Scan:** Barcode scan karne par system automatically us code"
+        " ko Master SKU se mapping karke stock update karega."
     )
 
     brand_options = (
@@ -675,18 +730,21 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
     )
 
     def handle_auto_scan():
-      code = st.session_state.auto_scanned_code.strip().upper()
-      if code:
+      raw_code = st.session_state.auto_scanned_code.strip()
+      if raw_code:
+        # Resolve scanned code to Master Product Code
+        master_sku = resolve_to_master_sku(raw_code, df_prod, df_map)
+
         try:
           supabase.table("add_inventory").insert({
-              "product_code": code,
+              "product_code": master_sku,
               "added_qty": int(scan_qty),
               "brand": str(selected_inward_brand).strip().upper(),
           }).execute()
           clear_app_cache()
           st.toast(
-              f"✅ Auto-Added: {scan_qty} Qty of '{code}' to"
-              f" {selected_inward_brand}!",
+              f"✅ Mapped & Added: {scan_qty} Qty of Master SKU '{master_sku}'"
+              f" (Scanned: {raw_code})",
               icon="🚀",
           )
           st.session_state.auto_scanned_code = ""
@@ -694,12 +752,12 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
           st.error(f"Database Error: {e}")
 
     st.text_input(
-        "⚡ Focus cursor here and scan SKU (Auto Push on Scan)",
+        "⚡ Focus cursor here and scan Barcode / QR Code",
         key="auto_scanned_code",
         on_change=handle_auto_scan,
     )
 
-  # TAB 2: BULK BARCODE & QR GENERATOR (WITH QTY SUPPORT)
+  # TAB 2: BULK BARCODE & QR GENERATOR
   with tab2:
     st.subheader(
         "🖨️ Bulk Barcode & QR Generator with Custom Print Quantities"
@@ -723,7 +781,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
           else []
       )
       selected_skus = st.multiselect(
-          "Choose SKUs to Generate Codes", p_code_list
+          "Choose Master SKUs to Generate Codes", p_code_list
       )
 
       if selected_skus:
@@ -909,7 +967,7 @@ elif menu == "📤 4. SALE DATA Sheet":
       "📁 Bulk Sales Sheet Upload",
   ])
 
-  # TAB 1: AUTO-PUSH SCAN SALE
+  # TAB 1: AUTO-PUSH SCAN SALE (WITH MASTER SKU RESOLUTION)
   with s_tab1:
     st.subheader("📷 Auto-Push Scanner for Channel Direct Sale")
 
@@ -930,12 +988,15 @@ elif menu == "📤 4. SALE DATA Sheet":
       )
 
     def handle_auto_sale_scan():
-      code = st.session_state.auto_sale_code.strip().upper()
-      if code:
+      raw_code = st.session_state.auto_sale_code.strip()
+      if raw_code:
+        # Resolve scan code to Master SKU / Channel SKU
+        target_sku = resolve_to_master_sku(raw_code, df_prod, df_map)
+
         try:
           sale_payload = {
               "date": scan_sale_date.strftime("%Y-%m-%d"),
-              "channel_sku": code,
+              "channel_sku": target_sku,
               "type": str(scan_sale_type).strip().upper(),
               "brand": str(scan_sale_brand).strip().upper(),
               "qty": int(scan_sale_qty),
@@ -943,14 +1004,16 @@ elif menu == "📤 4. SALE DATA Sheet":
           supabase.table("sale_data").insert(sale_payload).execute()
           clear_app_cache()
           st.toast(
-              f"✅ Sale Deducted! {scan_sale_qty} Qty of '{code}'", icon="📦"
+              f"✅ Sale Deducted! {scan_sale_qty} Qty of Master SKU"
+              f" '{target_sku}'",
+              icon="📦",
           )
           st.session_state.auto_sale_code = ""
         except Exception as e:
           st.error(f"Database Error: {e}")
 
     st.text_input(
-        "⚡ Focus cursor here and scan Channel SKU Barcode",
+        "⚡ Focus cursor here and scan Channel/Master SKU Barcode",
         key="auto_sale_code",
         on_change=handle_auto_sale_scan,
     )
@@ -983,16 +1046,17 @@ elif menu == "📤 4. SALE DATA Sheet":
 
       if submit_sale_single and s_sku != "":
         try:
+          target_sku = resolve_to_master_sku(s_sku, df_prod, df_map)
           sale_payload = {
               "date": sale_date.strftime("%Y-%m-%d"),
-              "channel_sku": str(s_sku).strip().upper(),
+              "channel_sku": target_sku,
               "type": str(s_type).strip().upper(),
               "brand": str(s_brand).strip().upper(),
               "qty": int(s_qty),
           }
           supabase.table("sale_data").insert(sale_payload).execute()
           clear_app_cache()
-          st.success(f"Order Manifest Linked successfully for {s_sku}!")
+          st.success(f"Order Manifest Linked successfully for {target_sku}!")
           st.rerun()
         except Exception as e:
           st.error(f"Database Error: {e}")
