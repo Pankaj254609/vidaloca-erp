@@ -11,13 +11,11 @@ import qrcode
 import streamlit as st
 from barcode.writer import ImageWriter
 from PIL import Image
-from supabase import Client, create_client
-
-# --- NEW IMPORTS FOR PDF GENERATION ---
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.platypus import Image as RLImage
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+from supabase import Client, create_client
 
 # --- Theme Configuration ---
 st.set_page_config(page_title="Vida Loca Advanced ERP", layout="wide")
@@ -89,14 +87,14 @@ def generate_qrcode_img(text):
   return rv
 
 
-# --- PDF GENERATOR HELPER FUNCTION ---
-def generate_codes_pdf(sku_list, code_type="barcode"):
+# --- PDF GENERATOR HELPER FUNCTION WITH MULTIPLE QTY SUPPORT ---
+def generate_codes_pdf(sku_qty_dict, code_type="barcode"):
   pdf_buffer = io.BytesIO()
   doc = SimpleDocTemplate(
       pdf_buffer,
       pagesize=A4,
-      rightMargin=20,
-      leftMargin=20,
+      rightMargin=15,
+      leftMargin=15,
       topMargin=20,
       bottomMargin=20,
   )
@@ -108,10 +106,19 @@ def generate_codes_pdf(sku_list, code_type="barcode"):
   # Grid Configuration: 3 Columns Layout
   cols = 3
   img_w = 2.3 * inch
-  img_h = 1.1 * inch if code_type == "barcode" else 2.0 * inch
+  img_h = 1.1 * inch if code_type == "barcode" else 1.8 * inch
 
-  for sku in sku_list:
-    clean_s = str(sku).strip().upper()
+  # Flatten the dictionary based on requested QTY
+  expanded_sku_list = []
+  for sku, qty in sku_qty_dict.items():
+    clean_sku = str(sku).strip().upper()
+    try:
+      count = int(qty)
+    except:
+      count = 1
+    expanded_sku_list.extend([clean_sku] * max(1, count))
+
+  for clean_s in expanded_sku_list:
     if code_type == "barcode":
       img_stream = generate_barcode_img(clean_s)
     else:
@@ -135,8 +142,8 @@ def generate_codes_pdf(sku_list, code_type="barcode"):
         TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
-            ("TOPPADDING", (0, 0), (-1, -1), 12),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 10),
         ])
     )
     elements.append(t)
@@ -621,7 +628,7 @@ if menu == "📊 Live Dashboard":
       hide_index=True,
   )
 
-# ==================== 📥 3. ADD INVENTORY SHEET (WITH AUTO-SCAN & BULK PDF/ZIP GENERATION) ====================
+# ==================== 📥 3. ADD INVENTORY SHEET ====================
 elif menu == "📥 3. ADD INVENTORY Sheet":
   st.markdown(
       "<h1>📥 Stock Inward Ledger & Barcode Engine</h1>", unsafe_allow_html=True
@@ -638,7 +645,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
 
   tab1, tab2, tab3 = st.tabs([
       "📸 Auto-Push Scan & Inward",
-      "🖨️ Bulk Barcode & QR Generator (PDF / ZIP)",
+      "🖨️ Bulk Barcode & QR Generator (With Multi-Qty)",
       "📁 Bulk Manifest Upload",
   ])
 
@@ -692,9 +699,11 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
         on_change=handle_auto_scan,
     )
 
-  # TAB 2: BULK BARCODE & QR GENERATOR (PDF + ZIP)
+  # TAB 2: BULK BARCODE & QR GENERATOR (WITH QTY SUPPORT)
   with tab2:
-    st.subheader("🖨️ Bulk Barcode & QR Code Generator (PDF Labels / ZIP Archive)")
+    st.subheader(
+        "🖨️ Bulk Barcode & QR Generator with Custom Print Quantities"
+    )
 
     gen_mode = st.radio(
         "Select SKU Input Source",
@@ -704,7 +713,8 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
         ],
         horizontal=True,
     )
-    skus_to_generate = []
+
+    sku_qty_map = {}
 
     if gen_mode == "Select Master SKUs from Database":
       p_code_list = (
@@ -712,12 +722,26 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
           if not df_prod.empty
           else []
       )
-      skus_to_generate = st.multiselect(
+      selected_skus = st.multiselect(
           "Choose SKUs to Generate Codes", p_code_list
       )
+
+      if selected_skus:
+        st.markdown("##### 🔢 Enter Quantity of Labels needed for each SKU:")
+        grid_cols = st.columns(min(len(selected_skus), 4))
+        for idx, sku in enumerate(selected_skus):
+          with grid_cols[idx % 4]:
+            qty_input = st.number_input(
+                f"Qty for {sku}",
+                min_value=1,
+                value=1,
+                step=1,
+                key=f"qty_{sku}",
+            )
+            sku_qty_map[sku] = qty_input
     else:
       sku_file = st.file_uploader(
-          "Upload CSV/Excel containing 'Product Code' column",
+          "Upload CSV/Excel containing 'Product Code' and optional 'QTY' column",
           type=["csv", "xlsx"],
           key="bulk_sku_file",
       )
@@ -728,59 +752,78 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
             else pd.read_excel(sku_file)
         )
         col_found = None
+        qty_col_found = None
+
         for col in file_df.columns:
-          if "product" in str(col).lower() or "sku" in str(col).lower():
+          c_lower = str(col).lower()
+          if "product" in c_lower or "sku" in c_lower:
             col_found = col
-            break
+          if "qty" in c_lower or "quantity" in c_lower or "count" in c_lower:
+            qty_col_found = col
+
         if col_found:
-          skus_to_generate = (
-              file_df[col_found].dropna().astype(str).str.strip().tolist()
-          )
+          for _, row in file_df.iterrows():
+            s_val = str(row[col_found]).strip().upper()
+            if s_val and s_val != "NAN":
+              q_val = 1
+              if qty_col_found and not pd.isna(row[qty_col_found]):
+                try:
+                  q_val = int(row[qty_col_found])
+                except:
+                  q_val = 1
+              sku_qty_map[s_val] = q_val
           st.success(
-              f"✅ Extracted {len(skus_to_generate)} SKUs from column"
-              f" '{col_found}'"
+              f"✅ Read {len(sku_qty_map)} SKUs with custom print quantities"
+              " successfully!"
           )
         else:
-          st.error("Pehle column me SKU / Product Code naam ka header ho!")
+          st.error(
+              "Header Check Error: File me SKU / Product Code column honi"
+              " chahiye."
+          )
 
-    if skus_to_generate:
+    if sku_qty_map:
+      total_labels_count = sum(sku_qty_map.values())
+      st.info(
+          f"📊 **Total Printable Labels to Generate:** {total_labels_count} units"
+          f" across {len(sku_qty_map)} unique SKUs."
+      )
+
       st.markdown("---")
-      st.markdown("### 📄 Export printable Labels to PDF")
+      st.markdown("### 📄 Export printable Labels to PDF (Grid Multi-Page)")
 
       pdf_col1, pdf_col2 = st.columns(2)
       with pdf_col1:
         pdf_barcode_bytes = generate_codes_pdf(
-            skus_to_generate, code_type="barcode"
+            sku_qty_map, code_type="barcode"
         )
         st.download_button(
-            label="📄 Download Bulk Barcodes (PDF Printable)",
+            label="📄 Download Barcodes PDF Label Sheet",
             data=pdf_barcode_bytes,
             file_name=f"Barcodes_Labels_{date.today()}.pdf",
             mime="application/pdf",
         )
 
       with pdf_col2:
-        pdf_qrcode_bytes = generate_codes_pdf(
-            skus_to_generate, code_type="qrcode"
-        )
+        pdf_qrcode_bytes = generate_codes_pdf(sku_qty_map, code_type="qrcode")
         st.download_button(
-            label="📄 Download Bulk QR Codes (PDF Printable)",
+            label="📄 Download QR Codes PDF Label Sheet",
             data=pdf_qrcode_bytes,
             file_name=f"QRCodes_Labels_{date.today()}.pdf",
             mime="application/pdf",
         )
 
       st.markdown("---")
-      st.markdown("### 📦 Export Raw Images to ZIP Archive")
+      st.markdown("### 📦 Export Raw Unique Images to ZIP Archive")
 
       zip_col1, zip_col2 = st.columns(2)
       with zip_col1:
-        if st.button("📦 Generate Barcodes (ZIP)"):
+        if st.button("📦 Generate Unique Barcodes (ZIP)"):
           zip_buffer = io.BytesIO()
           with zipfile.ZipFile(
               zip_buffer, "a", zipfile.ZIP_DEFLATED, False
           ) as zip_file:
-            for sku in skus_to_generate:
+            for sku in sku_qty_map.keys():
               clean_s = str(sku).strip().upper()
               b_img = generate_barcode_img(clean_s)
               zip_file.writestr(f"Barcode_{clean_s}.png", b_img.getvalue())
@@ -793,12 +836,12 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
           )
 
       with zip_col2:
-        if st.button("📱 Generate QR Codes (ZIP)"):
+        if st.button("📱 Generate Unique QR Codes (ZIP)"):
           zip_buffer = io.BytesIO()
           with zipfile.ZipFile(
               zip_buffer, "a", zipfile.ZIP_DEFLATED, False
           ) as zip_file:
-            for sku in skus_to_generate:
+            for sku in sku_qty_map.keys():
               clean_s = str(sku).strip().upper()
               q_img = generate_qrcode_img(clean_s)
               zip_file.writestr(f"QRCode_{clean_s}.png", q_img.getvalue())
@@ -844,7 +887,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
   ]
   st.dataframe(df_stock[cols_to_view], use_container_width=True, hide_index=True)
 
-# ==================== 📤 4. SALE DATA SHEET (WITH AUTO SCAN) ====================
+# ==================== 📤 4. SALE DATA SHEET ====================
 elif menu == "📤 4. SALE DATA Sheet":
   st.markdown(
       "<h1>📤 Channel Sales Manifest Database Control</h1>",
@@ -924,7 +967,11 @@ elif menu == "📤 4. SALE DATA Sheet":
             if not df_map.empty
             else []
         )
-        s_sku = st.selectbox("Select Channel SKU", channel_sku_list) if channel_sku_list else st.text_input("Enter Channel SKU").strip().upper()
+        s_sku = (
+            st.selectbox("Select Channel SKU", channel_sku_list)
+            if channel_sku_list
+            else st.text_input("Enter Channel SKU").strip().upper()
+        )
         s_type = st.selectbox("Order Type", ["SINGLE", "BUNDLE", "BUNDAL"])
       with col_s2:
         s_brand = st.selectbox("Brand Name", ["VIDA LOCA", "YUGNIK"])
