@@ -13,6 +13,12 @@ from barcode.writer import ImageWriter
 from PIL import Image
 from supabase import Client, create_client
 
+# --- NEW IMPORTS FOR PDF GENERATION ---
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import inch
+from reportlab.platypus import Image as RLImage
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+
 # --- Theme Configuration ---
 st.set_page_config(page_title="Vida Loca Advanced ERP", layout="wide")
 
@@ -81,6 +87,63 @@ def generate_qrcode_img(text):
   img.save(rv, format="PNG")
   rv.seek(0)
   return rv
+
+
+# --- PDF GENERATOR HELPER FUNCTION ---
+def generate_codes_pdf(sku_list, code_type="barcode"):
+  pdf_buffer = io.BytesIO()
+  doc = SimpleDocTemplate(
+      pdf_buffer,
+      pagesize=A4,
+      rightMargin=20,
+      leftMargin=20,
+      topMargin=20,
+      bottomMargin=20,
+  )
+
+  elements = []
+  data_matrix = []
+  current_row = []
+
+  # Grid Configuration: 3 Columns Layout
+  cols = 3
+  img_w = 2.3 * inch
+  img_h = 1.1 * inch if code_type == "barcode" else 2.0 * inch
+
+  for sku in sku_list:
+    clean_s = str(sku).strip().upper()
+    if code_type == "barcode":
+      img_stream = generate_barcode_img(clean_s)
+    else:
+      img_stream = generate_qrcode_img(clean_s)
+
+    rl_img = RLImage(img_stream, width=img_w, height=img_h)
+    current_row.append(rl_img)
+
+    if len(current_row) == cols:
+      data_matrix.append(current_row)
+      current_row = []
+
+  if current_row:
+    while len(current_row) < cols:
+      current_row.append("")
+    data_matrix.append(current_row)
+
+  if data_matrix:
+    t = Table(data_matrix, colWidths=[2.5 * inch] * cols)
+    t.setStyle(
+        TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+            ("TOPPADDING", (0, 0), (-1, -1), 12),
+        ])
+    )
+    elements.append(t)
+
+  doc.build(elements)
+  pdf_buffer.seek(0)
+  return pdf_buffer
 
 
 # --- ⚡ BULK SUPABASE FETCH WITH MULTITHREADING ENGINE ⚡ ---
@@ -558,7 +621,7 @@ if menu == "📊 Live Dashboard":
       hide_index=True,
   )
 
-# ==================== 📥 3. ADD INVENTORY SHEET (WITH AUTO-SCAN & BULK CODE GENERATION) ====================
+# ==================== 📥 3. ADD INVENTORY SHEET (WITH AUTO-SCAN & BULK PDF/ZIP GENERATION) ====================
 elif menu == "📥 3. ADD INVENTORY Sheet":
   st.markdown(
       "<h1>📥 Stock Inward Ledger & Barcode Engine</h1>", unsafe_allow_html=True
@@ -575,7 +638,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
 
   tab1, tab2, tab3 = st.tabs([
       "📸 Auto-Push Scan & Inward",
-      "🖨️ Bulk Barcode & QR Generator",
+      "🖨️ Bulk Barcode & QR Generator (PDF / ZIP)",
       "📁 Bulk Manifest Upload",
   ])
 
@@ -604,7 +667,6 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
         key="auto_scan_qty",
     )
 
-    # Callback function for automatic execution when barcode scanner sends Enter key
     def handle_auto_scan():
       code = st.session_state.auto_scanned_code.strip().upper()
       if code:
@@ -620,7 +682,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
               f" {selected_inward_brand}!",
               icon="🚀",
           )
-          st.session_state.auto_scanned_code = ""  # Clear box after scan
+          st.session_state.auto_scanned_code = ""
         except Exception as e:
           st.error(f"Database Error: {e}")
 
@@ -630,9 +692,9 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
         on_change=handle_auto_scan,
     )
 
-  # TAB 2: BULK BARCODE & QR GENERATOR
+  # TAB 2: BULK BARCODE & QR GENERATOR (PDF + ZIP)
   with tab2:
-    st.subheader("🖨️ Bulk Barcode & QR Code Generator (ZIP Download)")
+    st.subheader("🖨️ Bulk Barcode & QR Code Generator (PDF Labels / ZIP Archive)")
 
     gen_mode = st.radio(
         "Select SKU Input Source",
@@ -681,11 +743,39 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
         else:
           st.error("Pehle column me SKU / Product Code naam ka header ho!")
 
-    col_btn1, col_btn2 = st.columns(2)
-
     if skus_to_generate:
-      with col_btn1:
-        if st.button("📦 Generate Bulk Barcodes (ZIP)"):
+      st.markdown("---")
+      st.markdown("### 📄 Export printable Labels to PDF")
+
+      pdf_col1, pdf_col2 = st.columns(2)
+      with pdf_col1:
+        pdf_barcode_bytes = generate_codes_pdf(
+            skus_to_generate, code_type="barcode"
+        )
+        st.download_button(
+            label="📄 Download Bulk Barcodes (PDF Printable)",
+            data=pdf_barcode_bytes,
+            file_name=f"Barcodes_Labels_{date.today()}.pdf",
+            mime="application/pdf",
+        )
+
+      with pdf_col2:
+        pdf_qrcode_bytes = generate_codes_pdf(
+            skus_to_generate, code_type="qrcode"
+        )
+        st.download_button(
+            label="📄 Download Bulk QR Codes (PDF Printable)",
+            data=pdf_qrcode_bytes,
+            file_name=f"QRCodes_Labels_{date.today()}.pdf",
+            mime="application/pdf",
+        )
+
+      st.markdown("---")
+      st.markdown("### 📦 Export Raw Images to ZIP Archive")
+
+      zip_col1, zip_col2 = st.columns(2)
+      with zip_col1:
+        if st.button("📦 Generate Barcodes (ZIP)"):
           zip_buffer = io.BytesIO()
           with zipfile.ZipFile(
               zip_buffer, "a", zipfile.ZIP_DEFLATED, False
@@ -696,14 +786,14 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
               zip_file.writestr(f"Barcode_{clean_s}.png", b_img.getvalue())
           zip_buffer.seek(0)
           st.download_button(
-              label="📥 Download Barcodes ZIP Archive",
+              label="📥 Download Barcodes ZIP",
               data=zip_buffer,
               file_name=f"Barcodes_Bulk_{date.today()}.zip",
               mime="application/zip",
           )
 
-      with col_btn2:
-        if st.button("📱 Generate Bulk QR Codes (ZIP)"):
+      with zip_col2:
+        if st.button("📱 Generate QR Codes (ZIP)"):
           zip_buffer = io.BytesIO()
           with zipfile.ZipFile(
               zip_buffer, "a", zipfile.ZIP_DEFLATED, False
@@ -714,7 +804,7 @@ elif menu == "📥 3. ADD INVENTORY Sheet":
               zip_file.writestr(f"QRCode_{clean_s}.png", q_img.getvalue())
           zip_buffer.seek(0)
           st.download_button(
-              label="📥 Download QR Codes ZIP Archive",
+              label="📥 Download QR Codes ZIP",
               data=zip_buffer,
               file_name=f"QRCodes_Bulk_{date.today()}.zip",
               mime="application/zip",
