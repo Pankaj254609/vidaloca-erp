@@ -4,3 +4,4 @@ supabase
 python-barcode
 qrcode
 Pillow
+reportlab
