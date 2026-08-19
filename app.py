@@ -1,2102 +1,1159 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
 import io
-
 import os
-
 import random
-
 import zipfile
 
-from concurrent.futures import ThreadPoolExecutor
-
-from datetime import date, datetime
-
-
-
 import barcode
-
-import pandas as pd
-
-import qrcode
-
-import streamlit as st
-
 from barcode.writer import ImageWriter
-
-from PIL import Image
-
+import pandas as pd
+import qrcode
 from reportlab.lib.pagesizes import A4
-
 from reportlab.lib.units import inch
-
 from reportlab.platypus import Image as RLImage
-
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
-
+import streamlit as st
 from supabase import Client, create_client
 
-
-
 # --- Theme Configuration ---
-
 st.set_page_config(page_title="Vida Loca Advanced ERP", layout="wide")
 
-
-
 st.markdown(
-
     """
-
     <style>
-
     .main { background-color: #f8f9fa; }
-
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-weight: 700; }
-
     [data-testid="stSidebar"] { background-color: #0f172a !important; color: #ffffff !important; }
-
     [data-testid="stSidebar"] *.stText, [data-testid="stSidebar"] label, [data-testid="stSidebar"] h1 { color: #ffffff !important; }
-
     .metric-container {
-
         background-color: #ffffff; border-radius: 12px; padding: 20px;
-
         box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-left: 6px solid #3b82f6; margin-bottom: 15px;
-
     }
-
     .metric-title { font-size: 14px; color: #64748b; font-weight: 600; text-transform: uppercase; }
-
     .metric-value { font-size: 28px; color: #1e293b; font-weight: 700; margin-top: 5px; }
-
     .card-blue { border-left-color: #3b82f6; }
-
     .card-orange { border-left-color: #f97316; }
-
     .card-green { border-left-color: #10b981; }
-
     .stButton>button {
-
         background-color: #3b82f6 !important; color: white !important;
-
         border-radius: 8px !important; padding: 8px 24px !important; font-weight: 600 !important; border: none !important;
-
     }
-
     .stButton>button:hover { background-color: #2563eb !important; }
-
     </style>
-
 """,
-
     unsafe_allow_html=True,
-
 )
-
-
-
 
 
 # --- SUPABASE CONNECTION ---
-
 @st.cache_resource
-
 def init_supabase() -> Client:
-
-  url = st.secrets["supabase"]["url"]
-
-  key = st.secrets["supabase"]["key"]
-
-  return create_client(url, key)
-
-
-
+    url = st.secrets["supabase"]["url"]
+    key = st.secrets["supabase"]["key"]
+    return create_client(url, key)
 
 
 try:
-
-  supabase = init_supabase()
-
+    supabase = init_supabase()
 except Exception as e:
-
-  st.error(f"Supabase Client Connection Error: {e}")
-
-
-
+    st.error(f"Supabase Client Connection Error: {e}")
 
 
 # --- HIGH RESOLUTION BARCODE & QR GENERATOR ---
-
 def generate_barcode_img(text):
-
-  code128 = barcode.get_barcode_class("code128")
-
-  rv = io.BytesIO()
-
-  # Writer options tuned for high clarity on PDF printouts
-
-  writer_options = {
-
-      "module_height": 10.0,
-
-      "quiet_zone": 2.0,
-
-      "font_size": 10,
-
-      "text_distance": 3.0,
-
-      "write_text": True,
-
-      "dpi": 300,
-
-  }
-
-  code = code128(text, writer=ImageWriter())
-
-  code.write(rv, options=writer_options)
-
-  rv.seek(0)
-
-  return rv
-
-
-
+    code128 = barcode.get_barcode_class("code128")
+    rv = io.BytesIO()
+    writer_options = {
+        "module_height": 10.0,
+        "quiet_zone": 2.0,
+        "font_size": 10,
+        "text_distance": 3.0,
+        "write_text": True,
+        "dpi": 300,
+    }
+    code = code128(text, writer=ImageWriter())
+    code.write(rv, options=writer_options)
+    rv.seek(0)
+    return rv
 
 
 def generate_qrcode_img(text):
-
-  qr = qrcode.QRCode(
-
-      version=1,
-
-      error_correction=qrcode.constants.ERROR_CORRECT_M,  # Medium error correction for better scanning
-
-      box_size=10,
-
-      border=2,  # Compact border
-
-  )
-
-  qr.add_data(text)
-
-  qr.make(fit=True)
-
-  img = qr.make_image(fill_color="black", back_color="white")
-
-  rv = io.BytesIO()
-
-  img.save(rv, format="PNG")
-
-  rv.seek(0)
-
-  return rv
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=2,
+    )
+    qr.add_data(text)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    rv = io.BytesIO()
+    img.save(rv, format="PNG")
+    rv.seek(0)
+    return rv
 
 
-
-
-
-# --- PDF GENERATOR HELPER FUNCTION WITH OPTIMIZED SIZING ---
-
+# --- PDF GENERATOR HELPER FUNCTION ---
 def generate_codes_pdf(sku_qty_dict, code_type="barcode"):
-
-  pdf_buffer = io.BytesIO()
-
-  doc = SimpleDocTemplate(
-
-      pdf_buffer,
-
-      pagesize=A4,
-
-      rightMargin=10,
-
-      leftMargin=10,
-
-      topMargin=15,
-
-      bottomMargin=15,
-
-  )
-
-
-
-  elements = []
-
-  data_matrix = []
-
-  current_row = []
-
-
-
-  # Grid Configuration: 3 Columns Layout
-
-  cols = 3
-
-  img_w = 2.4 * inch
-
-  img_h = 1.0 * inch if code_type == "barcode" else 1.8 * inch
-
-
-
-  # Flatten the dictionary based on requested QTY
-
-  expanded_sku_list = []
-
-  for sku, qty in sku_qty_dict.items():
-
-    clean_sku = str(sku).strip().upper()
-
-    try:
-
-      count = int(qty)
-
-    except:
-
-      count = 1
-
-    expanded_sku_list.extend([clean_sku] * max(1, count))
-
-
-
-  for clean_s in expanded_sku_list:
-
-    if code_type == "barcode":
-
-      img_stream = generate_barcode_img(clean_s)
-
-    else:
-
-      img_stream = generate_qrcode_img(clean_s)
-
-
-
-    rl_img = RLImage(img_stream, width=img_w, height=img_h)
-
-    current_row.append(rl_img)
-
-
-
-    if len(current_row) == cols:
-
-      data_matrix.append(current_row)
-
-      current_row = []
-
-
-
-  if current_row:
-
-    while len(current_row) < cols:
-
-      current_row.append("")
-
-    data_matrix.append(current_row)
-
-
-
-  if data_matrix:
-
-    t = Table(data_matrix, colWidths=[2.55 * inch] * cols)
-
-    t.setStyle(
-
-        TableStyle([
-
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-
-            ("TOPPADDING", (0, 0), (-1, -1), 8),
-
-        ])
-
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        pdf_buffer,
+        pagesize=A4,
+        rightMargin=10,
+        leftMargin=10,
+        topMargin=15,
+        bottomMargin=15,
     )
 
-    elements.append(t)
+    elements = []
+    data_matrix = []
+    current_row = []
 
+    cols = 3
+    img_w = 2.4 * inch
+    img_h = 1.0 * inch if code_type == "barcode" else 1.8 * inch
 
+    expanded_sku_list = []
+    for sku, qty in sku_qty_dict.items():
+        clean_sku_val = str(sku).strip().upper()
+        try:
+            count = int(qty)
+        except:
+            count = 1
+        expanded_sku_list.extend([clean_sku_val] * max(1, count))
 
-  doc.build(elements)
+    for clean_s in expanded_sku_list:
+        if code_type == "barcode":
+            img_stream = generate_barcode_img(clean_s)
+        else:
+            img_stream = generate_qrcode_img(clean_s)
 
-  pdf_buffer.seek(0)
+        rl_img = RLImage(img_stream, width=img_w, height=img_h)
+        current_row.append(rl_img)
 
-  return pdf_buffer
+        if len(current_row) == cols:
+            data_matrix.append(current_row)
+            current_row = []
 
+    if current_row:
+        while len(current_row) < cols:
+            current_row.append("")
+        data_matrix.append(current_row)
 
+    if data_matrix:
+        t = Table(data_matrix, colWidths=[2.55 * inch] * cols)
+        t.setStyle(
+            TableStyle([
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ])
+        )
+        elements.append(t)
 
+    doc.build(elements)
+    pdf_buffer.seek(0)
+    return pdf_buffer
 
 
 # --- ⚡ BULK SUPABASE FETCH WITH MULTITHREADING ENGINE ⚡ ---
-
 def fetch_chunk(table_name, start, limit):
-
-  try:
-
-    res = (
-
-        supabase.table(table_name)
-
-        .select("*")
-
-        .range(start, start + limit - 1)
-
-        .execute()
-
-    )
-
-    return res.data if res.data else []
-
-  except:
-
-    return []
-
-
-
+    try:
+        res = (
+            supabase.table(table_name)
+            .select("*")
+            .range(start, start + limit - 1)
+            .execute()
+        )
+        return res.data if res.data else []
+    except:
+        return []
 
 
 @st.cache_data(
-
     ttl=300, show_spinner="⚡ Cloud Database se Records Fetch ho rahe hain..."
-
 )
-
 def load_data_cached():
 
+    def fetch_all_rows_multithreaded(table_name):
+        try:
+            count_res = (
+                supabase.table(table_name)
+                .select("id", count="exact")
+                .limit(1)
+                .execute()
+            )
+            total_rows = count_res.count if count_res.count else 200000
+        except:
+            total_rows = 600000
 
+        limit = 4000
+        ranges = [
+            (table_name, i, limit) for i in range(0, total_rows + limit, limit)
+        ]
 
-  def fetch_all_rows_multithreaded(table_name):
+        all_data = []
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            results = executor.map(lambda p: fetch_chunk(*p), ranges)
+            for rows in results:
+                if rows:
+                    all_data.extend(rows)
 
+        return pd.DataFrame(all_data)
+
+    # 1. Master SKU Fetch
     try:
-
-      count_res = (
-
-          supabase.table(table_name)
-
-          .select("id", count="exact")
-
-          .limit(1)
-
-          .execute()
-
-      )
-
-      total_rows = count_res.count if count_res.count else 200000
-
+        df_p = fetch_all_rows_multithreaded("master_sku")
+        if not df_p.empty:
+            actual_cols = [
+                "category_code",
+                "product_code",
+                "name",
+                "scan_identifier",
+                "color",
+                "size",
+                "brand",
+                "type",
+                "component_product_code",
+                "qty",
+                "image_url",
+            ]
+            df_p = df_p[[c for c in actual_cols if c in df_p.columns]]
+            df_p.columns = [
+                "Category Code",
+                "Product Code",
+                "Name",
+                "Scan Identifier",
+                "Color",
+                "Size",
+                "Brand",
+                "Type",
+                "Component Product Code",
+                "QTY",
+                "Image URL",
+            ][: len(df_p.columns)]
     except:
-
-      total_rows = 600000
-
-
-
-    limit = 4000
-
-    ranges = [
-
-        (table_name, i, limit) for i in range(0, total_rows + limit, limit)
-
-    ]
-
-
-
-    all_data = []
-
-    with ThreadPoolExecutor(max_workers=20) as executor:
-
-      results = executor.map(lambda p: fetch_chunk(*p), ranges)
-
-      for rows in results:
-
-        if rows:
-
-          all_data.extend(rows)
-
-
-
-    return pd.DataFrame(all_data)
-
-
-
-  # 1. Master SKU Fetch
-
-  try:
-
-    df_p = fetch_all_rows_multithreaded("master_sku")
-
-    if not df_p.empty:
-
-      actual_cols = [
-
-          "category_code",
-
-          "product_code",
-
-          "name",
-
-          "scan_identifier",
-
-          "color",
-
-          "size",
-
-          "brand",
-
-          "type",
-
-          "component_product_code",
-
-          "qty",
-
-          "image_url",
-
-      ]
-
-      df_p = df_p[[c for c in actual_cols if c in df_p.columns]]
-
-      df_p.columns = [
-
-          "Category Code",
-
-          "Product Code",
-
-          "Name",
-
-          "Scan Identifier",
-
-          "Color",
-
-          "Size",
-
-          "Brand",
-
-          "Type",
-
-          "Component Product Code",
-
-          "QTY",
-
-          "Image URL",
-
-      ][: len(df_p.columns)]
-
-  except:
-
-    df_p = pd.DataFrame()
-
-  if df_p.empty:
-
-    df_p = pd.DataFrame(
-
-        columns=[
-
-            "Category Code",
-
-            "Product Code",
-
-            "Name",
-
-            "Scan Identifier",
-
-            "Color",
-
-            "Size",
-
-            "Brand",
-
-            "Type",
-
-            "Component Product Code",
-
-            "QTY",
-
-            "Image URL",
-
-        ]
-
-    )
-
-
-
-  # 2. Mapping Matrix Fetch
-
-  try:
-
-    df_m = fetch_all_rows_multithreaded("channel_sku_map")
-
-    if not df_m.empty:
-
-      df_m = df_m.drop(columns=["id", "created_at"], errors="ignore")
-
-      df_m.columns = [
-
-          "Seller SKU on Channel",
-
-          "SKU Code",
-
-          "channelName",
-
-          "PACK OF",
-
-          "BRAND",
-
-      ][: len(df_m.columns)]
-
-  except:
-
-    df_m = pd.DataFrame()
-
-  if df_m.empty:
-
-    df_m = pd.DataFrame(
-
-        columns=[
-
-            "Seller SKU on Channel",
-
-            "SKU Code",
-
-            "channelName",
-
-            "PACK OF",
-
-            "BRAND",
-
-        ]
-
-    )
-
-
-
-  # 3. Sales Fetch
-
-  try:
-
-    df_sa = fetch_all_rows_multithreaded("sale_data")
-
-    if not df_sa.empty:
-
-      df_sa = df_sa.drop(columns=["created_at"], errors="ignore")
-
-      df_sa.columns = [
-
-          "id" if str(c).lower() == "id" else c for c in df_sa.columns
-
-      ]
-
-
-
-      rename_dict = {}
-
-      for col in df_sa.columns:
-
-        if col in ["id", "ID"]:
-
-          rename_dict[col] = "ID"
-
-        elif col in ["date", "DATE"]:
-
-          rename_dict[col] = "Date"
-
-        elif col in [
-
-            "channel_sku",
-
-            "CHANNEL_SKU",
-
-            "ITEM SKU CODE",
-
-            "ITEM_SKU_CODE",
-
-            "SKU",
-
-        ]:
-
-          rename_dict[col] = "Channel SKU"
-
-        elif col in ["type", "TYPE"]:
-
-          rename_dict[col] = "Type"
-
-        elif col in ["brand", "BRAND"]:
-
-          rename_dict[col] = "Brand"
-
-        elif col in ["qty", "QTY", "quantity", "QUANTITY"]:
-
-          rename_dict[col] = "Qty"
-
-      df_sa = df_sa.rename(columns=rename_dict)
-
-  except:
-
-    df_sa = pd.DataFrame()
-
-  if df_sa.empty:
-
-    df_sa = pd.DataFrame(
-
-        columns=["ID", "Date", "Channel SKU", "Type", "Brand", "Qty"]
-
-    )
-
-
-
-  # 4. Stock Fetch
-
-  try:
-
-    df_st = fetch_all_rows_multithreaded("add_inventory")
-
-    if not df_st.empty:
-
-      df_st = df_st.drop(columns=["created_at"], errors="ignore")
-
-      df_st.columns = [
-
-          "id" if str(c).lower() == "id" else c for c in df_st.columns
-
-      ]
-
-      rename_st = {
-
-          "id": "ID",
-
-          "product_code": "Product Code",
-
-          "added_qty": "Added QTY",
-
-          "brand": "Brand",
-
-      }
-
-      df_st = df_st.rename(columns=rename_st)
-
-      if "Date & Time" not in df_st.columns:
-
-        df_st["Date & Time"] = datetime.now().strftime("%Y-%m-%d")
-
-  except:
-
-    df_st = pd.DataFrame()
-
-  if df_st.empty:
-
-    df_st = pd.DataFrame(
-
-        columns=["ID", "Product Code", "Added QTY", "Brand", "Date & Time"]
-
-    )
-
-
-
-  return df_p, df_m, df_sa, df_st
-
-
-
+        df_p = pd.DataFrame()
+    if df_p.empty:
+        df_p = pd.DataFrame(
+            columns=[
+                "Category Code",
+                "Product Code",
+                "Name",
+                "Scan Identifier",
+                "Color",
+                "Size",
+                "Brand",
+                "Type",
+                "Component Product Code",
+                "QTY",
+                "Image URL",
+            ]
+        )
+
+    # 2. Mapping Matrix Fetch (Channel SKU)
+    try:
+        df_m = fetch_all_rows_multithreaded("channel_sku_map")
+        if not df_m.empty:
+            df_m = df_m.drop(columns=["id", "created_at"], errors="ignore")
+            df_m.columns = [
+                "Seller SKU on Channel",
+                "SKU Code",
+                "channelName",
+                "PACK OF",
+                "BRAND",
+            ][: len(df_m.columns)]
+    except:
+        df_m = pd.DataFrame()
+    if df_m.empty:
+        df_m = pd.DataFrame(
+            columns=[
+                "Seller SKU on Channel",
+                "SKU Code",
+                "channelName",
+                "PACK OF",
+                "BRAND",
+            ]
+        )
+
+    # 3. Sales Fetch
+    try:
+        df_sa = fetch_all_rows_multithreaded("sale_data")
+        if not df_sa.empty:
+            df_sa = df_sa.drop(columns=["created_at"], errors="ignore")
+            rename_dict = {}
+            for col in df_sa.columns:
+                if col in ["id", "ID"]:
+                    rename_dict[col] = "ID"
+                elif col in ["date", "DATE"]:
+                    rename_dict[col] = "Date"
+                elif col in [
+                    "channel_sku",
+                    "CHANNEL_SKU",
+                    "ITEM SKU CODE",
+                    "ITEM_SKU_CODE",
+                    "SKU",
+                ]:
+                    rename_dict[col] = "Channel SKU"
+                elif col in ["type", "TYPE"]:
+                    rename_dict[col] = "Type"
+                elif col in ["brand", "BRAND"]:
+                    rename_dict[col] = "Brand"
+                elif col in ["qty", "QTY", "quantity", "QUANTITY"]:
+                    rename_dict[col] = "Qty"
+            df_sa = df_sa.rename(columns=rename_dict)
+    except:
+        df_sa = pd.DataFrame()
+    if df_sa.empty:
+        df_sa = pd.DataFrame(
+            columns=["ID", "Date", "Channel SKU", "Type", "Brand", "Qty"]
+        )
+
+    # 4. Stock Fetch
+    try:
+        df_st = fetch_all_rows_multithreaded("add_inventory")
+        if not df_st.empty:
+            df_st = df_st.drop(columns=["created_at"], errors="ignore")
+            rename_st = {
+                "id": "ID",
+                "product_code": "Product Code",
+                "added_qty": "Added QTY",
+                "brand": "Brand",
+            }
+            df_st = df_st.rename(columns=rename_st)
+            if "Date & Time" not in df_st.columns:
+                df_st["Date & Time"] = datetime.now().strftime("%Y-%m-%d")
+    except:
+        df_st = pd.DataFrame()
+    if df_st.empty:
+        df_st = pd.DataFrame(
+            columns=["ID", "Product Code", "Added QTY", "Brand", "Date & Time"]
+        )
+
+    return df_p, df_m, df_sa, df_st
 
 
 def clear_app_cache():
-
-  st.cache_data.clear()
-
-
-
+    st.cache_data.clear()
 
 
 def clean_sku(val):
-
-  if pd.isna(val):
-
-    return ""
-
-  s = str(val).strip().upper()
-
-  if s.endswith(".0"):
-
-    s = s[:-2]
-
-  return s
-
-
-
+    if pd.isna(val):
+        return ""
+    s = str(val).strip().upper()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
 
 
 def convert_df_to_csv(df):
-
-  return df.to_csv(index=False).encode("utf-8")
-
-
-
+    return df.to_csv(index=False).encode("utf-8")
 
 
 # --- SMART SCAN TO MASTER SKU RESOLVER ---
-
 def resolve_to_master_sku(scanned_code, df_master, df_mapping):
+    clean_input = clean_sku(scanned_code)
+    if not clean_input:
+        return ""
 
-  """Lookup engine: Scanned Barcode/QR text ko Master SKU (Product Code) me convert karta hai."""
+    if not df_master.empty:
+        if "Product Code" in df_master.columns:
+            match = df_master[
+                df_master["Product Code"].apply(clean_sku) == clean_input
+            ]
+            if not match.empty:
+                return match.iloc[0]["Product Code"]
 
-  clean_input = clean_sku(scanned_code)
+        if "Scan Identifier" in df_master.columns:
+            match = df_master[
+                df_master["Scan Identifier"].apply(clean_sku) == clean_input
+            ]
+            if not match.empty:
+                return match.iloc[0]["Product Code"]
 
-  if not clean_input:
+        if "Component Product Code" in df_master.columns:
+            match = df_master[
+                df_master["Component Product Code"].apply(clean_sku)
+                == clean_input
+            ]
+            if not match.empty:
+                return match.iloc[0]["Product Code"]
 
-    return ""
+    if not df_mapping.empty and "Seller SKU on Channel" in df_mapping.columns:
+        match_map = df_mapping[
+            df_mapping["Seller SKU on Channel"].apply(clean_sku) == clean_input
+        ]
+        if not match_map.empty:
+            mapped_sku = clean_sku(match_map.iloc[0]["SKU Code"])
+            return resolve_to_master_sku(mapped_sku, df_master, pd.DataFrame())
 
-
-
-  if not df_master.empty:
-
-    # 1. Check direct match with 'Product Code'
-
-    if "Product Code" in df_master.columns:
-
-      match = df_master[
-
-          df_master["Product Code"].apply(clean_sku) == clean_input
-
-      ]
-
-      if not match.empty:
-
-        return match.iloc[0]["Product Code"]
-
-
-
-    # 2. Check match with 'Scan Identifier'
-
-    if "Scan Identifier" in df_master.columns:
-
-      match = df_master[
-
-          df_master["Scan Identifier"].apply(clean_sku) == clean_input
-
-      ]
-
-      if not match.empty:
-
-        return match.iloc[0]["Product Code"]
-
-
-
-    # 3. Check match with 'Component Product Code'
-
-    if "Component Product Code" in df_master.columns:
-
-      match = df_master[
-
-          df_master["Component Product Code"].apply(clean_sku) == clean_input
-
-      ]
-
-      if not match.empty:
-
-        return match.iloc[0]["Product Code"]
-
-
-
-  # 4. Check via Channel SKU Mapping
-
-  if not df_mapping.empty and "Seller SKU on Channel" in df_mapping.columns:
-
-    match_map = df_mapping[
-
-        df_mapping["Seller SKU on Channel"].apply(clean_sku) == clean_input
-
-    ]
-
-    if not match_map.empty:
-
-      mapped_sku = clean_sku(match_map.iloc[0]["SKU Code"])
-
-      # Recursive check mapped code with Master
-
-      return resolve_to_master_sku(mapped_sku, df_master, pd.DataFrame())
-
-
-
-  # Default fallback: return cleaned input code
-
-  return clean_input
-
-
-
+    return clean_input
 
 
 # --- INVENTORY LEDGER ENGINE ---
-
 def get_actual_inventory_cached(
-
     start_date=None, end_date=None, selected_brand="All", ignore_date=False
-
 ):
+    df_p, df_m, df_sa, df_st = load_data_cached()
 
-  df_p, df_m, df_sa, df_st = load_data_cached()
-
-
-
-  df_p_cp = df_p.copy()
-
-  df_p_cp["Product Code Clean"] = df_p_cp["Product Code"].apply(clean_sku)
-
-  df_p_cp["QTY"] = (
-
-      pd.to_numeric(df_p_cp["QTY"], errors="coerce").fillna(0).astype(int)
-
-  )
-
-
-
-  inward_map = {}
-
-  if not df_st.empty:
-
-    df_st_cp = df_st.copy()
-
-    df_st_cp["Product Code Clean"] = df_st_cp["Product Code"].apply(clean_sku)
-
-    df_st_cp["Added QTY"] = (
-
-        pd.to_numeric(df_st_cp["Added QTY"], errors="coerce")
-
-        .fillna(0)
-
-        .astype(int)
-
+    df_p_cp = df_p.copy()
+    df_p_cp["Product Code Clean"] = df_p_cp["Product Code"].apply(clean_sku)
+    df_p_cp["QTY"] = (
+        pd.to_numeric(df_p_cp["QTY"], errors="coerce").fillna(0).astype(int)
     )
 
-
-
-    if not ignore_date and start_date and end_date:
-
-      try:
-
-        df_st_cp["Parsed_Date"] = pd.to_datetime(
-
-            df_st_cp["Date & Time"], errors="coerce"
-
-        ).dt.date
-
-        df_st_cp = df_st_cp[
-
-            (df_st_cp["Parsed_Date"] >= start_date)
-
-            & (df_st_cp["Parsed_Date"] <= end_date)
-
-        ]
-
-      except:
-
-        pass
-
-
-
-    inward_map = (
-
-        df_st_cp.groupby("Product Code Clean")["Added QTY"].sum().to_dict()
-
-    )
-
-
-
-  df_p_cp["Inward Log Added"] = (
-
-      df_p_cp["Product Code Clean"].map(inward_map).fillna(0).astype(int)
-
-  )
-
-  df_p_cp["Total Inward Stock"] = df_p_cp["QTY"] + df_p_cp["Inward Log Added"]
-
-
-
-  sold_stock = {code: 0 for code in df_p_cp["Product Code Clean"].unique()}
-
-
-
-  if not df_sa.empty:
-
-    df_sa_cp = df_sa.copy()
-
-    df_sa_cp["Channel SKU Clean"] = df_sa_cp["Channel SKU"].apply(clean_sku)
-
-    df_sa_cp["Qty"] = (
-
-        pd.to_numeric(df_sa_cp["Qty"], errors="coerce").fillna(0).astype(int)
-
-    )
-
-    df_sa_cp["Type Clean"] = (
-
-        df_sa_cp["Type"].fillna("").astype(str).str.strip().str.upper()
-
-    )
-
-
-
-    if not ignore_date and start_date and end_date:
-
-      try:
-
-        df_sa_cp["Parsed_Date"] = pd.to_datetime(
-
-            df_sa_cp["Date"], errors="coerce"
-
-        ).dt.date
-
-        df_sa_cp = df_sa_cp[
-
-            (df_sa_cp["Parsed_Date"] >= start_date)
-
-            & (df_sa_cp["Parsed_Date"] <= end_date)
-
-        ]
-
-      except:
-
-        pass
-
-
-
-    if selected_brand != "All" and "Brand" in df_sa_cp.columns:
-
-      df_sa_cp = df_sa_cp[
-
-          df_sa_cp["Brand"].astype(str).str.strip().str.upper()
-
-          == selected_brand.upper()
-
-      ]
-
-
-
-    chanel_map = {}
-
-    if not df_m.empty:
-
-      chanel_map = dict(
-
-          zip(
-
-              df_m["Seller SKU on Channel"].apply(clean_sku),
-
-              df_m["SKU Code"].apply(clean_sku),
-
-          )
-
-      )
-
-
-
-    df_sa_cp["Mapped SKU"] = (
-
-        df_sa_cp["Channel SKU Clean"]
-
-        .map(chanel_map)
-
-        .fillna(df_sa_cp["Channel SKU Clean"])
-
-    )
-
-    sales_summary = (
-
-        df_sa_cp.groupby(["Mapped SKU", "Type Clean"])["Qty"].sum().reset_index()
-
-    )
-
-
-
-    scan_to_comp = dict(
-
-        zip(
-
-            df_p_cp["Scan Identifier"].apply(clean_sku),
-
-            df_p_cp["Component Product Code"].apply(clean_sku),
-
+    inward_map = {}
+    if not df_st.empty:
+        df_st_cp = df_st.copy()
+        df_st_cp["Product Code Clean"] = df_st_cp["Product Code"].apply(
+            clean_sku
+        )
+        df_st_cp["Added QTY"] = (
+            pd.to_numeric(df_st_cp["Added QTY"], errors="coerce")
+            .fillna(0)
+            .astype(int)
         )
 
-    )
+        if not ignore_date and start_date and end_date:
+            try:
+                df_st_cp["Parsed_Date"] = pd.to_datetime(
+                    df_st_cp["Date & Time"], errors="coerce"
+                ).dt.date
+                df_st_cp = df_st_cp[
+                    (df_st_cp["Parsed_Date"] >= start_date)
+                    & (df_st_cp["Parsed_Date"] <= end_date)
+                ]
+            except:
+                pass
 
-    comp_to_prod = dict(
-
-        zip(
-
-            df_p_cp["Component Product Code"].apply(clean_sku),
-
-            df_p_cp["Product Code Clean"],
-
+        inward_map = (
+            df_st_cp.groupby("Product Code Clean")["Added QTY"]
+            .sum()
+            .to_dict()
         )
 
+    df_p_cp["Inward Log Added"] = (
+        df_p_cp["Product Code Clean"].map(inward_map).fillna(0).astype(int)
+    )
+    df_p_cp["Total Inward Stock"] = df_p_cp["QTY"] + df_p_cp["Inward Log Added"]
+
+    sold_stock = {code: 0 for code in df_p_cp["Product Code Clean"].unique()}
+
+    if not df_sa.empty:
+        df_sa_cp = df_sa.copy()
+        df_sa_cp["Channel SKU Clean"] = df_sa_cp["Channel SKU"].apply(clean_sku)
+        df_sa_cp["Qty"] = (
+            pd.to_numeric(df_sa_cp["Qty"], errors="coerce")
+            .fillna(0)
+            .astype(int)
+        )
+        df_sa_cp["Type Clean"] = (
+            df_sa_cp["Type"].fillna("").astype(str).str.strip().str.upper()
+        )
+
+        if not ignore_date and start_date and end_date:
+            try:
+                df_sa_cp["Parsed_Date"] = pd.to_datetime(
+                    df_sa_cp["Date"], errors="coerce"
+                ).dt.date
+                df_sa_cp = df_sa_cp[
+                    (df_sa_cp["Parsed_Date"] >= start_date)
+                    & (df_sa_cp["Parsed_Date"] <= end_date)
+                ]
+            except:
+                pass
+
+        if selected_brand != "All" and "Brand" in df_sa_cp.columns:
+            df_sa_cp = df_sa_cp[
+                df_sa_cp["Brand"].astype(str).str.strip().str.upper()
+                == selected_brand.upper()
+            ]
+
+        chanel_map = {}
+        if not df_m.empty:
+            chanel_map = dict(
+                zip(
+                    df_m["Seller SKU on Channel"].apply(clean_sku),
+                    df_m["SKU Code"].apply(clean_sku),
+                )
+            )
+
+        df_sa_cp["Mapped SKU"] = (
+            df_sa_cp["Channel SKU Clean"]
+            .map(chanel_map)
+            .fillna(df_sa_cp["Channel SKU Clean"])
+        )
+        sales_summary = (
+            df_sa_cp.groupby(["Mapped SKU", "Type Clean"])["Qty"]
+            .sum()
+            .reset_index()
+        )
+
+        scan_to_comp = dict(
+            zip(
+                df_p_cp["Scan Identifier"].apply(clean_sku),
+                df_p_cp["Component Product Code"].apply(clean_sku),
+            )
+        )
+        comp_to_prod = dict(
+            zip(
+                df_p_cp["Component Product Code"].apply(clean_sku),
+                df_p_cp["Product Code Clean"],
+            )
+        )
+
+        for _, row in sales_summary.iterrows():
+            sku = str(row["Mapped SKU"])
+            s_type = str(row["Type Clean"])
+            qty = int(row["Qty"])
+
+            if s_type in ["BUNDAL", "BUNDLE"]:
+                comp_sku = scan_to_comp.get(sku, "")
+                if comp_sku in sold_stock:
+                    sold_stock[comp_sku] += qty
+            else:
+                if sku in sold_stock:
+                    sold_stock[sku] += qty
+                else:
+                    alt_sku = comp_to_prod.get(sku, "")
+                    if alt_sku in sold_stock:
+                        sold_stock[alt_sku] += qty
+
+    df_p_cp["Total Sold QTY"] = (
+        df_p_cp["Product Code Clean"].map(sold_stock).fillna(0).astype(int)
+    )
+    df_p_cp["Actual Balance Stock"] = (
+        df_p_cp["Total Inward Stock"] - df_p_cp["Total Sold QTY"]
     )
 
+    if selected_brand != "All" and "Brand" in df_p_cp.columns:
+        df_p_cp = df_p_cp[
+            df_p_cp["Brand"].astype(str).str.strip().str.upper()
+            == selected_brand.upper()
+        ]
 
-
-    for _, row in sales_summary.iterrows():
-
-      sku = str(row["Mapped SKU"])
-
-      s_type = str(row["Type Clean"])
-
-      qty = int(row["Qty"])
-
-
-
-      if s_type in ["BUNDAL", "BUNDLE"]:
-
-        comp_sku = scan_to_comp.get(sku, "")
-
-        if comp_sku in sold_stock:
-
-          sold_stock[comp_sku] += qty
-
-      else:
-
-        if sku in sold_stock:
-
-          sold_stock[sku] += qty
-
-        else:
-
-          alt_sku = comp_to_prod.get(sku, "")
-
-          if alt_sku in sold_stock:
-
-            sold_stock[alt_sku] += qty
-
-
-
-  df_p_cp["Total Sold QTY"] = (
-
-      df_p_cp["Product Code Clean"].map(sold_stock).fillna(0).astype(int)
-
-  )
-
-  df_p_cp["Actual Balance Stock"] = (
-
-      df_p_cp["Total Inward Stock"] - df_p_cp["Total Sold QTY"]
-
-  )
-
-
-
-  if selected_brand != "All" and "Brand" in df_p_cp.columns:
-
-    df_p_cp = df_p_cp[
-
-        df_p_cp["Brand"].astype(str).str.strip().str.upper()
-
-        == selected_brand.upper()
-
-    ]
-
-
-
-  return df_p_cp
-
-
-
+    return df_p_cp
 
 
 # ---- Sidebar Panel ----
-
 st.sidebar.markdown(
-
     "<h2 style='color:white; text-align:center;'>Vida Loca Hub</h2>",
-
     unsafe_allow_html=True,
-
 )
-
 if st.sidebar.button("🔄 Refresh Data (Clear Cache)"):
-
-  clear_app_cache()
-
-  st.rerun()
-
-
+    clear_app_cache()
+    st.rerun()
 
 st.sidebar.write("---")
-
 menu = st.sidebar.radio(
-
     "📌 CONTROL PANEL:", [
-
         "📊 Live Dashboard",
-
-        "🔄 Live Channels Sync",
-
-        "📦 1. MASTER SKU Sheet",
-
-        "🔗 2. CHANEL SKU MAP Sheet",
-
-        "📥 3. ADD INVENTORY Sheet",
-
+        "🏷️ Master SKU Management",
+        "🔗 Channel SKU Mapping",
+        "📦 3. ADD INVENTORY Sheet",
         "📤 4. SALE DATA Sheet",
-
     ]
-
 )
-
-
 
 df_prod, df_map, df_sales, df_stock = load_data_cached()
 
-
-
 # ==================== LIVE DASHBOARD ====================
-
 if menu == "📊 Live Dashboard":
+    st.markdown(
+        "<h1 style='color:#0f172a;'>📊 OMS Core Dashboard</h1>",
+        unsafe_allow_html=True,
+    )
+    today = date.today()
+    start_d = st.sidebar.date_input("Start Date", date(today.year, 1, 1))
+    end_d = st.sidebar.date_input("End Date", today)
+    ignore_date = st.sidebar.checkbox(
+        "Ignore Date Filter (Show All-Time Sales)", value=True
+    )
 
-  st.markdown(
-
-      "<h1 style='color:#0f172a;'>📊 OMS Core Dashboard</h1>",
-
-      unsafe_allow_html=True,
-
-  )
-
-  today = date.today()
-
-  start_d = st.sidebar.date_input("Start Date", date(today.year, 1, 1))
-
-  end_d = st.sidebar.date_input("End Date", today)
-
-  ignore_date = st.sidebar.checkbox(
-
-      "Ignore Date Filter (Show All-Time Sales)", value=True
-
-  )
-
-
-
-  all_brands = ["All"]
-
-  if not df_sales.empty and "Brand" in df_sales.columns:
-
-    all_brands += sorted(
-
-        list(
-
-            df_sales["Brand"]
-
-            .dropna()
-
-            .astype(str)
-
-            .str.strip()
-
-            .str.upper()
-
-            .unique()
-
+    all_brands = ["All"]
+    if not df_sales.empty and "Brand" in df_sales.columns:
+        all_brands += sorted(
+            list(
+                df_sales["Brand"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .unique()
+            )
         )
 
+    all_brands = sorted(list(set(all_brands)), key=lambda x: (x != "All", x))
+    selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
+
+    df_actual = get_actual_inventory_cached(
+        start_date=start_d,
+        end_date=end_d,
+        selected_brand=selected_brand,
+        ignore_date=ignore_date,
+    )
+
+    if not df_sales.empty:
+        df_sales_filtered = df_sales.copy()
+        df_sales_filtered["Qty"] = (
+            pd.to_numeric(df_sales_filtered["Qty"], errors="coerce")
+            .fillna(0)
+            .astype(int)
+        )
+
+        if not ignore_date:
+            try:
+                df_sales_filtered["Parsed_Date"] = pd.to_datetime(
+                    df_sales_filtered["Date"], errors="coerce"
+                ).dt.date
+                df_sales_filtered = df_sales_filtered[
+                    (df_sales_filtered["Parsed_Date"] >= start_d)
+                    & (df_sales_filtered["Parsed_Date"] <= end_d)
+                ]
+            except:
+                pass
+
+        if selected_brand != "All" and "Brand" in df_sales_filtered.columns:
+            df_sales_filtered = df_sales_filtered[
+                df_sales_filtered["Brand"].astype(str).str.strip().str.upper()
+                == selected_brand.upper()
+            ]
+
+        total_sales_display = int(df_sales_filtered["Qty"].sum())
+    else:
+        total_sales_display = 0
+
+    m_col1, m_col2, m_col3 = st.columns(3)
+    with m_col1:
+        st.markdown(
+            '<div class="metric-container card-blue"><div'
+            ' class="metric-title">Total Inward Stock</div><div'
+            ' class="metric-value">'
+            f'{int(df_actual["Total Inward Stock"].sum()) if "Total Inward Stock" in df_actual.columns else 0}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with m_col2:
+        st.markdown(
+            '<div class="metric-container card-orange"><div'
+            ' class="metric-title">Total Sale QTY</div><div'
+            ' class="metric-value">'
+            f"{total_sales_display}</div></div>",
+            unsafe_allow_html=True,
+        )
+    with m_col3:
+        st.markdown(
+            '<div class="metric-container card-green"><div'
+            ' class="metric-title">Actual Balance Stock</div><div'
+            ' class="metric-value">'
+            f'{int(df_actual["Actual Balance Stock"].sum()) if "Actual Balance Stock" in df_actual.columns else 0}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    st.write("---")
+    st.subheader("📋 Inventory Ledger Table")
+    show_cols = [
+        "Image URL",
+        "Product Code",
+        "Name",
+        "Color",
+        "Size",
+        "Brand",
+        "Type",
+        "Total Inward Stock",
+        "Total Sold QTY",
+        "Actual Balance Stock",
+    ]
+    available_show = [c for c in show_cols if c in df_actual.columns]
+    st.dataframe(
+        df_actual[available_show],
+        column_config={"Image URL": st.column_config.ImageColumn("Preview")},
+        use_container_width=True,
+        hide_index=True,
     )
 
 
-
-  all_brands = sorted(list(set(all_brands)), key=lambda x: (x != "All", x))
-
-  selected_brand = st.sidebar.selectbox("Filter by Brand Name", all_brands)
-
-
-
-  df_actual = get_actual_inventory_cached(
-
-      start_date=start_d,
-
-      end_date=end_d,
-
-      selected_brand=selected_brand,
-
-      ignore_date=ignore_date,
-
-  )
-
-
-
-  if not df_sales.empty:
-
-    df_sales_filtered = df_sales.copy()
-
-    df_sales_filtered["Qty"] = (
-
-        pd.to_numeric(df_sales_filtered["Qty"], errors="coerce")
-
-        .fillna(0)
-
-        .astype(int)
-
+# ==================== 🏷️ MASTER SKU MANAGEMENT ====================
+elif menu == "🏷️ Master SKU Management":
+    st.markdown(
+        "<h1>🏷️ Master SKU Management & Cataloging</h1>", unsafe_allow_html=True
     )
 
+    tab_m1, tab_m2, tab_m3 = st.tabs([
+        "➕ Single Add Master SKU",
+        "📁 Bulk Master SKU Upload",
+        "📋 View All Master SKUs",
+    ])
 
+    with tab_m1:
+        st.subheader("Add Single Master Product / SKU")
+        with st.form("single_master_sku_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                m_cat_code = st.text_input("Category Code")
+                m_prod_code = st.text_input(
+                    "Product Code (Unique SKU)*"
+                )  # product_code
+                m_name = st.text_input("Product Name")  # name
+                m_scan_id = st.text_input("Scan Identifier / Barcode")
+                m_color = st.text_input("Color")
+            with col2:
+                m_size = st.text_input("Size")
+                m_brand = st.text_input("Brand Name*")  # brand
+                m_type = st.text_input("Type (e.g. SINGLE / BUNDLE)")
+                m_comp_code = st.text_input("Component Product Code")
+                m_qty = st.number_input(
+                    "Initial Opening QTY", min_value=0, value=0, step=1
+                )
 
-    if not ignore_date:
+            m_img_url = st.text_input("Image URL (Optional)")
+            submit_master = st.form_submit_button("💾 Save Master SKU")
 
-      try:
+            if submit_master:
+                if not m_prod_code.strip():
+                    st.error("Product Code is mandatory!")
+                else:
+                    try:
+                        payload = {
+                            "category_code": m_cat_code.strip(),
+                            "product_code": m_prod_code.strip().upper(),
+                            "name": m_name.strip(),
+                            "scan_identifier": m_scan_id.strip().upper(),
+                            "color": m_color.strip(),
+                            "size": m_size.strip().upper(),
+                            "brand": m_brand.strip().upper(),
+                            "type": m_type.strip().upper(),
+                            "component_product_code": m_comp_code.strip().upper(),
+                            "qty": int(m_qty),
+                            "image_url": m_img_url.strip(),
+                        }
+                        supabase.table("master_sku").insert(payload).execute()
+                        clear_app_cache()
+                        st.success(
+                            f"✅ Master SKU '{m_prod_code}' successfully added!"
+                        )
+                    except Exception as e:
+                        st.error(f"Error inserting record: {e}")
 
-        df_sales_filtered["Parsed_Date"] = pd.to_datetime(
+    with tab_m2:
+        st.subheader("Bulk Master SKU Upload via CSV / Excel")
 
-            df_sales_filtered["Date"], errors="coerce"
-
-        ).dt.date
-
-        df_sales_filtered = df_sales_filtered[
-
-            (df_sales_filtered["Parsed_Date"] >= start_d)
-
-            & (df_sales_filtered["Parsed_Date"] <= end_d)
-
+        # Template Generation
+        sample_master_data = pd.DataFrame(
+            columns=[
+                "category_code",
+                "product_code",
+                "name",
+                "scan_identifier",
+                "color",
+                "size",
+                "brand",
+                "type",
+                "component_product_code",
+                "qty",
+                "image_url",
+            ]
+        )
+        sample_master_data.loc[0] = [
+            "CAT01",
+            "VL-TSHIRT-BLK-M",
+            "Vida Loca Black T-Shirt",
+            "890123456789",
+            "Black",
+            "M",
+            "VIDA LOCA",
+            "SINGLE",
+            "",
+            100,
+            "https://example.com/img.jpg",
         ]
 
-      except:
+        st.download_button(
+            label="📥 Download Master SKU Template (CSV)",
+            data=convert_df_to_csv(sample_master_data),
+            file_name="master_sku_template.csv",
+            mime="text/csv",
+        )
 
-        pass
+        uploaded_master_file = st.file_uploader(
+            "Upload filled Master SKU file", type=["csv", "xlsx"]
+        )
+        if uploaded_master_file is not None:
+            df_upload = (
+                pd.read_csv(uploaded_master_file)
+                if uploaded_master_file.name.endswith(".csv")
+                else pd.read_excel(uploaded_master_file)
+            )
+            if st.button("🚀 Upload & Sync Master SKUs"):
+                try:
+                    # Clean columns mapping or lowercase keys
+                    df_upload.columns = [
+                        c.strip().lower() for c in df_upload.columns
+                    ]
+                    records = df_upload.to_dict(orient="records")
+                    supabase.table("master_sku").insert(records).execute()
+                    clear_app_cache()
+                    st.success("🎉 Bulk Master SKUs successfully imported!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error during bulk import: {e}")
+
+    with tab_m3:
+        st.subheader("Master SKU Directory Catalog")
+        if not df_prod.empty:
+            st.download_button(
+                label="📥 Download Full Master Catalog (CSV)",
+                data=convert_df_to_csv(df_prod),
+                file_name=f"Master_SKU_Catalog_{date.today()}.csv",
+                mime="text/csv",
+            )
+            st.dataframe(df_prod, use_container_width=True, hide_index=True)
+        else:
+            st.info("No master SKU records found.")
 
 
-
-    if selected_brand != "All" and "Brand" in df_sales_filtered.columns:
-
-      df_sales_filtered = df_sales_filtered[
-
-          df_sales_filtered["Brand"].astype(str).str.strip().str.upper()
-
-          == selected_brand.upper()
-
-      ]
-
-
-
-    total_sales_display = int(df_sales_filtered["Qty"].sum())
-
-  else:
-
-    total_sales_display = 0
-
-
-
-  m_col1, m_col2, m_col3 = st.columns(3)
-
-  with m_col1:
-
+# ==================== 🔗 CHANNEL SKU MAPPING ====================
+elif menu == "🔗 Channel SKU Mapping":
     st.markdown(
-
-        '<div class="metric-container card-blue"><div'
-
-        ' class="metric-title">Total Inward Stock</div><div'
-
-        ' class="metric-value">'
-
-        f'{int(df_actual["Total Inward Stock"].sum()) if "Total Inward Stock" in df_actual.columns else 0}</div></div>',
-
+        "<h1>🔗 Channel SKU Mapping & Marketplace Links</h1>",
         unsafe_allow_html=True,
-
     )
 
-  with m_col2:
+    tab_c1, tab_c2, tab_c3 = st.tabs([
+        "➕ Single Map Channel SKU",
+        "📁 Bulk Channel SKU Upload",
+        "📋 View All Mappings",
+    ])
 
-    st.markdown(
+    with tab_c1:
+        st.subheader("Map a Channel SKU to Master SKU")
+        with st.form("single_channel_map_form"):
+            c_seller_sku = st.text_input(
+                "Seller SKU on Channel (Marketplace SKU)*"
+            )
+            c_sku_code = st.text_input(
+                "Master SKU Code*"
+            )  # matches master_sku product_code
+            c_channel_name = st.selectbox(
+                "Channel Name", ["Amazon", "Flipkart", "Myntra", "Ajio", "Shopify", "Other"]
+            )
+            c_pack_of = st.number_input("Pack Of", min_value=1, value=1, step=1)
+            c_brand = st.text_input("Brand Name")
 
-        '<div class="metric-container card-orange"><div'
+            submit_map = st.form_submit_button("💾 Save Channel Mapping")
 
-        ' class="metric-title">Total Sale QTY</div><div'
+            if submit_map:
+                if not c_seller_sku.strip() or not c_sku_code.strip():
+                    st.error("Seller SKU and Master SKU Code are mandatory!")
+                else:
+                    try:
+                        payload_map = {
+                            "seller_sku_on_channel": c_seller_sku.strip().upper(),
+                            "sku_code": c_sku_code.strip().upper(),
+                            "channelName": c_channel_name.strip(),
+                            "pack_of": int(c_pack_of),
+                            "brand": c_brand.strip().upper(),
+                        }
+                        supabase.table("channel_sku_map").insert(
+                            payload_map
+                        ).execute()
+                        clear_app_cache()
+                        st.success(
+                            f"✅ Successfully mapped channel SKU '{c_seller_sku}' to '{c_sku_code}'!"
+                        )
+                    except Exception as e:
+                        st.error(f"Error saving mapping: {e}")
 
-        ' class="metric-value">'
+    with tab_c2:
+        st.subheader("Bulk Channel SKU Mapping Upload via CSV / Excel")
 
-        f"{total_sales_display}</div></div>",
+        # Template Generation
+        sample_map_data = pd.DataFrame(
+            columns=[
+                "seller_sku_on_channel",
+                "sku_code",
+                "channelName",
+                "pack_of",
+                "brand",
+            ]
+        )
+        sample_map_data.loc[0] = [
+            "AMZ-VL-TSHIRT-BLK",
+            "VL-TSHIRT-BLK-M",
+            "Amazon",
+            1,
+            "VIDA LOCA",
+        ]
 
-        unsafe_allow_html=True,
+        st.download_button(
+            label="📥 Download Channel Mapping Template (CSV)",
+            data=convert_df_to_csv(sample_map_data),
+            file_name="channel_sku_mapping_template.csv",
+            mime="text/csv",
+        )
 
-    )
+        uploaded_map_file = st.file_uploader(
+            "Upload filled Channel Mapping file",
+            type=["csv", "xlsx"],
+            key="map_file_upload",
+        )
+        if uploaded_map_file is not None:
+            df_map_upload = (
+                pd.read_csv(uploaded_map_file)
+                if uploaded_map_file.name.endswith(".csv")
+                else pd.read_excel(uploaded_map_file)
+            )
+            if st.button("🚀 Upload & Sync Channel Maps"):
+                try:
+                    df_map_upload.columns = [
+                        c.strip().lower() for c in df_map_upload.columns
+                    ]
+                    records_map = df_map_upload.to_dict(orient="records")
+                    supabase.table("channel_sku_map").insert(
+                        records_map
+                    ).execute()
+                    clear_app_cache()
+                    st.success("🎉 Bulk Channel SKU mappings imported!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error during bulk import: {e}")
 
-  with m_col3:
-
-    st.markdown(
-
-        '<div class="metric-container card-green"><div'
-
-        ' class="metric-title">Actual Balance Stock</div><div'
-
-        ' class="metric-value">'
-
-        f'{int(df_actual["Actual Balance Stock"].sum()) if "Actual Balance Stock" in df_actual.columns else 0}</div></div>',
-
-        unsafe_allow_html=True,
-
-    )
-
-
-
-  st.write("---")
-
-  st.subheader("📋 Inventory Ledger Table")
-
-  show_cols = [
-
-      "Image URL",
-
-      "Product Code",
-
-      "Name",
-
-      "Color",
-
-      "Size",
-
-      "Brand",
-
-      "Type",
-
-      "Total Inward Stock",
-
-      "Total Sold QTY",
-
-      "Actual Balance Stock",
-
-  ]
-
-  available_show = [c for c in show_cols if c in df_actual.columns]
-
-  st.dataframe(
-
-      df_actual[available_show],
-
-      column_config={"Image URL": st.column_config.ImageColumn("Preview")},
-
-      use_container_width=True,
-
-      hide_index=True,
-
-  )
-
+    with tab_c3:
+        st.subheader("Existing Channel SKU Mappings")
+        if not df_map.empty:
+            st.download_button(
+                label="📥 Download Full Channel Map Registry (CSV)",
+                data=convert_df_to_csv(df_map),
+                file_name=f"Channel_SKU_Mappings_{date.today()}.csv",
+                mime="text/csv",
+            )
+            st.dataframe(df_map, use_container_width=True, hide_index=True)
+        else:
+            st.info("No channel SKU mappings found.")
 
 
 # ==================== 📥 3. ADD INVENTORY SHEET ====================
-
 elif menu == "📥 3. ADD INVENTORY Sheet":
-
-  st.markdown(
-
-      "<h1>📥 Stock Inward Ledger & Barcode Engine</h1>", unsafe_allow_html=True
-
-  )
-
-
-
-  if not df_stock.empty:
-
-    st.download_button(
-
-        label="📥 Download Complete Stock Inward Ledger (CSV)",
-
-        data=convert_df_to_csv(df_stock),
-
-        file_name=f"Stock_Inward_Full_{date.today()}.csv",
-
-        mime="text/csv",
-
-        key="download_stock_full",
-
+    st.markdown(
+        "<h1>📥 Stock Inward Ledger & Barcode Engine</h1>", unsafe_allow_html=True
     )
 
-
-
-  tab1, tab2, tab3 = st.tabs([
-
-      "📸 Auto-Push Scan & Inward",
-
-      "🖨️ Bulk Barcode & QR Generator (With Multi-Qty)",
-
-      "📁 Bulk Manifest Upload",
-
-  ])
-
-
-
-  # TAB 1: AUTO-PUSH SCANNER (WITH MASTER SKU RESOLUTION)
-
-  with tab1:
-
-    st.subheader("📷 Automatic Scanner (Auto-Push to Master SKU Inventory)")
-
-    st.caption(
-
-        "💡 **Smart Scan:** Barcode scan karne par system automatically us code"
-
-        " ko Master SKU se mapping karke stock update karega."
-
-    )
-
-
-
-    brand_options = (
-
-        sorted(list(df_prod["Brand"].dropna().unique()))
-
-        if not df_prod.empty and "Brand" in df_prod.columns
-
-        else ["VIDA LOCA", "YUGNIK"]
-
-    )
-
-    selected_inward_brand = st.selectbox(
-
-        "🏷️ Select Brand for Inward", brand_options, key="auto_scan_brand"
-
-    )
-
-
-
-    scan_qty = st.number_input(
-
-        "Quantity per Scan",
-
-        min_value=1,
-
-        value=1,
-
-        step=1,
-
-        key="auto_scan_qty",
-
-    )
-
-
-
-    def handle_auto_scan():
-
-      raw_code = st.session_state.auto_scanned_code.strip()
-
-      if raw_code:
-
-        # Resolve scanned code to Master Product Code
-
-        master_sku = resolve_to_master_sku(raw_code, df_prod, df_map)
-
-
-
-        try:
-
-          supabase.table("add_inventory").insert({
-
-              "product_code": master_sku,
-
-              "added_qty": int(scan_qty),
-
-              "brand": str(selected_inward_brand).strip().upper(),
-
-          }).execute()
-
-          clear_app_cache()
-
-          st.toast(
-
-              f"✅ Mapped & Added: {scan_qty} Qty of Master SKU '{master_sku}'"
-
-              f" (Scanned: {raw_code})",
-
-              icon="🚀",
-
-          )
-
-          st.session_state.auto_scanned_code = ""
-
-        except Exception as e:
-
-          st.error(f"Database Error: {e}")
-
-
-
-    st.text_input(
-
-        "⚡ Focus cursor here and scan Barcode / QR Code",
-
-        key="auto_scanned_code",
-
-        on_change=handle_auto_scan,
-
-    )
-
-
-
-  # TAB 2: BULK BARCODE & QR GENERATOR
-
-  with tab2:
-
-    st.subheader(
-
-        "🖨️ Bulk Barcode & QR Generator with Custom Print Quantities"
-
-    )
-
-
-
-    gen_mode = st.radio(
-
-        "Select SKU Input Source",
-
-        [
-
-            "Select Master SKUs from Database",
-
-            "Upload Bulk SKU List (CSV/Excel)",
-
-        ],
-
-        horizontal=True,
-
-    )
-
-
-
-    sku_qty_map = {}
-
-
-
-    if gen_mode == "Select Master SKUs from Database":
-
-      p_code_list = (
-
-          sorted(list(df_prod["Product Code"].dropna().unique()))
-
-          if not df_prod.empty
-
-          else []
-
-      )
-
-      selected_skus = st.multiselect(
-
-          "Choose Master SKUs to Generate Codes", p_code_list
-
-      )
-
-
-
-      if selected_skus:
-
-        st.markdown("##### 🔢 Enter Quantity of Labels needed for each SKU:")
-
-        grid_cols = st.columns(min(len(selected_skus), 4))
-
-        for idx, sku in enumerate(selected_skus):
-
-          with grid_cols[idx % 4]:
-
-            qty_input = st.number_input(
-
-                f"Qty for {sku}",
-
-                min_value=1,
-
-                value=1,
-
-                step=1,
-
-                key=f"qty_{sku}",
-
+    if not df_stock.empty:
+        st.download_button(
+            label="📥 Download Complete Stock Inward Ledger (CSV)",
+            data=convert_df_to_csv(df_stock),
+            file_name=f"Stock_Inward_Full_{date.today()}.csv",
+            mime="text/csv",
+            key="download_stock_full",
+        )
+
+    tab1, tab2, tab3 = st.tabs([
+        "📸 Auto-Push Scan & Inward",
+        "🖨️ Bulk Barcode & QR Generator",
+        "📁 Bulk Manifest Upload",
+    ])
+
+    with tab1:
+        st.subheader("📷 Automatic Scanner (Auto-Push to Master SKU Inventory)")
+        brand_options = (
+            sorted(list(df_prod["Brand"].dropna().unique()))
+            if not df_prod.empty and "Brand" in df_prod.columns
+            else ["VIDA LOCA", "YUGNIK"]
+        )
+        selected_inward_brand = st.selectbox(
+            "🏷️ Select Brand for Inward", brand_options, key="auto_scan_brand"
+        )
+        scan_qty = st.number_input(
+            "Quantity per Scan",
+            min_value=1,
+            value=1,
+            step=1,
+            key="auto_scan_qty",
+        )
+
+        def handle_auto_scan():
+            raw_code = st.session_state.auto_scanned_code.strip()
+            if raw_code:
+                master_sku = resolve_to_master_sku(raw_code, df_prod, df_map)
+                try:
+                    supabase.table("add_inventory").insert({
+                        "product_code": master_sku,
+                        "added_qty": int(scan_qty),
+                        "brand": str(selected_inward_brand).strip().upper(),
+                    }).execute()
+                    clear_app_cache()
+                    st.toast(
+                        f"✅ Mapped & Added: {scan_qty} Qty of Master SKU '{master_sku}'",
+                        icon="🚀",
+                    )
+                    st.session_state.auto_scanned_code = ""
+                except Exception as e:
+                    st.error(f"Database Error: {e}")
+
+        st.text_input(
+            "⚡ Focus cursor here and scan Barcode / QR Code",
+            key="auto_scanned_code",
+            on_change=handle_auto_scan,
+        )
+
+    with tab2:
+        st.subheader("🖨️ Bulk Barcode & QR Generator")
+        p_code_list = (
+            sorted(list(df_prod["Product Code"].dropna().unique()))
+            if not df_prod.empty
+            else []
+        )
+        selected_skus = st.multiselect(
+            "Choose Master SKUs to Generate Codes", p_code_list
+        )
+        sku_qty_map = {}
+        if selected_skus:
+            for sku in selected_skus:
+                sku_qty_map[sku] = 1
+
+        if sku_qty_map:
+            pdf_barcode_bytes = generate_codes_pdf(
+                sku_qty_map, code_type="barcode"
+            )
+            st.download_button(
+                label="📄 Download Barcodes PDF Label Sheet",
+                data=pdf_barcode_bytes,
+                file_name=f"Barcodes_Labels_{date.today()}.pdf",
+                mime="application/pdf",
             )
 
-            sku_qty_map[sku] = qty_input
-
-    else:
-
-      sku_file = st.file_uploader(
-
-          "Upload CSV/Excel containing 'Product Code' and optional 'QTY' column",
-
-          type=["csv", "xlsx"],
-
-          key="bulk_sku_file",
-
-      )
-
-      if sku_file is not None:
-
-        file_df = (
-
-            pd.read_csv(sku_file)
-
-            if sku_file.name.endswith(".csv")
-
-            else pd.read_excel(sku_file)
-
+    with tab3:
+        st.subheader("Upload Bulk Inventory Log Sheet")
+        uploaded_inv_file = st.file_uploader(
+            "Choose manifest file", type=["xlsx", "csv"], key="inv_bulk"
         )
-
-        col_found = None
-
-        qty_col_found = None
-
-
-
-        for col in file_df.columns:
-
-          c_lower = str(col).lower()
-
-          if "product" in c_lower or "sku" in c_lower:
-
-            col_found = col
-
-          if "qty" in c_lower or "quantity" in c_lower or "count" in c_lower:
-
-            qty_col_found = col
-
-
-
-        if col_found:
-
-          for _, row in file_df.iterrows():
-
-            s_val = str(row[col_found]).strip().upper()
-
-            if s_val and s_val != "NAN":
-
-              q_val = 1
-
-              if qty_col_found and not pd.isna(row[qty_col_found]):
-
+        if uploaded_inv_file is not None:
+            bulk_inv_df = (
+                pd.read_csv(uploaded_inv_file)
+                if uploaded_inv_file.name.endswith(".csv")
+                else pd.read_excel(uploaded_inv_file)
+            )
+            if st.button("🚀 Process Bulk Stock Load"):
                 try:
-
-                  q_val = int(row[qty_col_found])
-
-                except:
-
-                  q_val = 1
-
-              sku_qty_map[s_val] = q_val
-
-          st.success(
-
-              f"✅ Read {len(sku_qty_map)} SKUs with custom print quantities"
-
-              " successfully!"
-
-          )
-
-        else:
-
-          st.error(
-
-              "Header Check Error: File me SKU / Product Code column honi"
-
-              " chahiye."
-
-          )
-
-
-
-    if sku_qty_map:
-
-      total_labels_count = sum(sku_qty_map.values())
-
-      st.info(
-
-          f"📊 **Total Printable Labels to Generate:** {total_labels_count} units"
-
-          f" across {len(sku_qty_map)} unique SKUs."
-
-      )
-
-
-
-      st.markdown("---")
-
-      st.markdown("### 📄 Export printable Labels to PDF (Grid Multi-Page)")
-
-
-
-      pdf_col1, pdf_col2 = st.columns(2)
-
-      with pdf_col1:
-
-        pdf_barcode_bytes = generate_codes_pdf(
-
-            sku_qty_map, code_type="barcode"
-
-        )
-
-        st.download_button(
-
-            label="📄 Download Barcodes PDF Label Sheet",
-
-            data=pdf_barcode_bytes,
-
-            file_name=f"Barcodes_Labels_{date.today()}.pdf",
-
-            mime="application/pdf",
-
-        )
-
-
-
-      with pdf_col2:
-
-        pdf_qrcode_bytes = generate_codes_pdf(sku_qty_map, code_type="qrcode")
-
-        st.download_button(
-
-            label="📄 Download QR Codes PDF Label Sheet",
-
-            data=pdf_qrcode_bytes,
-
-            file_name=f"QRCodes_Labels_{date.today()}.pdf",
-
-            mime="application/pdf",
-
-        )
-
-
-
-      st.markdown("---")
-
-      st.markdown("### 📦 Export Raw Unique Images to ZIP Archive")
-
-
-
-      zip_col1, zip_col2 = st.columns(2)
-
-      with zip_col1:
-
-        if st.button("📦 Generate Unique Barcodes (ZIP)"):
-
-          zip_buffer = io.BytesIO()
-
-          with zipfile.ZipFile(
-
-              zip_buffer, "a", zipfile.ZIP_DEFLATED, False
-
-          ) as zip_file:
-
-            for sku in sku_qty_map.keys():
-
-              clean_s = str(sku).strip().upper()
-
-              b_img = generate_barcode_img(clean_s)
-
-              zip_file.writestr(f"Barcode_{clean_s}.png", b_img.getvalue())
-
-          zip_buffer.seek(0)
-
-          st.download_button(
-
-              label="📥 Download Barcodes ZIP",
-
-              data=zip_buffer,
-
-              file_name=f"Barcodes_Bulk_{date.today()}.zip",
-
-              mime="application/zip",
-
-          )
-
-
-
-      with zip_col2:
-
-        if st.button("📱 Generate Unique QR Codes (ZIP)"):
-
-          zip_buffer = io.BytesIO()
-
-          with zipfile.ZipFile(
-
-              zip_buffer, "a", zipfile.ZIP_DEFLATED, False
-
-          ) as zip_file:
-
-            for sku in sku_qty_map.keys():
-
-              clean_s = str(sku).strip().upper()
-
-              q_img = generate_qrcode_img(clean_s)
-
-              zip_file.writestr(f"QRCode_{clean_s}.png", q_img.getvalue())
-
-          zip_buffer.seek(0)
-
-          st.download_button(
-
-              label="📥 Download QR Codes ZIP",
-
-              data=zip_buffer,
-
-              file_name=f"QRCodes_Bulk_{date.today()}.zip",
-
-              mime="application/zip",
-
-          )
-
-
-
-  # TAB 3: BULK LOAD
-
-  with tab3:
-
-    st.subheader("Upload Bulk Inventory Log Sheet")
-
-    uploaded_inv_file = st.file_uploader(
-
-        "Choose manifest file", type=["xlsx", "csv"], key="inv_bulk"
-
+                    bulk_inv_df.columns = ["product_code", "added_qty", "brand"][
+                        : len(bulk_inv_df.columns)
+                    ]
+                    supabase.table("add_inventory").insert(
+                        bulk_inv_df.to_dict(orient="records")
+                    ).execute()
+                    clear_app_cache()
+                    st.success("Inventory Bulk Logs Added Successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error processing upload: {e}")
+
+    st.write("---")
+    cols_to_view = [
+        c
+        for c in ["ID", "Product Code", "Added QTY", "Brand", "Date & Time"]
+        if c in df_stock.columns
+    ]
+    st.dataframe(
+        df_stock[cols_to_view], use_container_width=True, hide_index=True
     )
-
-    if uploaded_inv_file is not None:
-
-      bulk_inv_df = (
-
-          pd.read_csv(uploaded_inv_file)
-
-          if uploaded_inv_file.name.endswith(".csv")
-
-          else pd.read_excel(uploaded_inv_file)
-
-      )
-
-      if st.button("🚀 Process Bulk Stock Load"):
-
-        try:
-
-          bulk_inv_df.columns = ["product_code", "added_qty", "brand"][: len(
-
-              bulk_inv_df.columns
-
-          )]
-
-          supabase.table("add_inventory").insert(
-
-              bulk_inv_df.to_dict(orient="records")
-
-          ).execute()
-
-          clear_app_cache()
-
-          st.success("Inventory Bulk Logs Added Successfully!")
-
-          st.rerun()
-
-        except Exception as e:
-
-          st.error(f"Error processing upload: {e}")
-
-
-
-  st.write("---")
-
-  cols_to_view = [
-
-      c
-
-      for c in ["ID", "Product Code", "Added QTY", "Brand", "Date & Time"]
-
-      if c in df_stock.columns
-
-  ]
-
-  st.dataframe(df_stock[cols_to_view], use_container_width=True, hide_index=True)
-
 
 
 # ==================== 📤 4. SALE DATA SHEET ====================
-
 elif menu == "📤 4. SALE DATA Sheet":
-
-  st.markdown(
-
-      "<h1>📤 Channel Sales Manifest Database Control</h1>",
-
-      unsafe_allow_html=True,
-
-  )
-
-
-
-  if not df_sales.empty:
-
-    st.download_button(
-
-        label="📥 Download Complete Channel Sales Manifest (CSV)",
-
-        data=convert_df_to_csv(df_sales),
-
-        file_name=f"Sales_Manifest_Full_{date.today()}.csv",
-
-        mime="text/csv",
-
-        key="download_sales_full",
-
+    st.markdown(
+        "<h1>📤 Channel Sales Manifest Database Control</h1>",
+        unsafe_allow_html=True,
     )
 
+    if not df_sales.empty:
+        st.download_button(
+            label="📥 Download Complete Channel Sales Manifest (CSV)",
+            data=convert_df_to_csv(df_sales),
+            file_name=f"Sales_Manifest_Full_{date.today()}.csv",
+            mime="text/csv",
+            key="download_sales_full",
+        )
 
+    s_tab1, s_tab2 = st.tabs([
+        "📸 Auto-Push Scan & Add Sale",
+        "📁 Bulk Sales Sheet Upload",
+    ])
 
-  s_tab1, s_tab2, s_tab3 = st.tabs([
+    with s_tab1:
+        st.subheader("📷 Auto-Push Scanner for Channel Direct Sale")
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            scan_sale_type = st.selectbox(
+                "Order Type", ["SINGLE", "BUNDLE", "BUNDAL"], key="auto_sale_type"
+            )
+            scan_sale_brand = st.selectbox(
+                "Brand Name", ["VIDA LOCA", "YUGNIK"], key="auto_sale_brand"
+            )
+        with col_s2:
+            scan_sale_qty = st.number_input(
+                "Qty Sold", min_value=1, value=1, step=1, key="auto_sale_qty"
+            )
+            scan_sale_date = st.date_input(
+                "Order Date", date.today(), key="auto_sale_date"
+            )
 
-      "📸 Auto-Push Scan & Add Sale",
+        def handle_auto_sale_scan():
+            raw_code = st.session_state.auto_sale_code.strip()
+            if raw_code:
+                target_sku = resolve_to_master_sku(raw_code, df_prod, df_map)
+                try:
+                    sale_payload = {
+                        "date": scan_sale_date.strftime("%Y-%m-%d"),
+                        "channel_sku": target_sku,
+                        "type": str(scan_sale_type).strip().upper(),
+                        "brand": str(scan_sale_brand).strip().upper(),
+                        "qty": int(scan_sale_qty),
+                    }
+                    supabase.table("sale_data").insert(sale_payload).execute()
+                    clear_app_cache()
+                    st.toast(
+                        f"✅ Sale Deducted! {scan_sale_qty} Qty of Master SKU '{target_sku}'",
+                        icon="📦",
+                    )
+                    st.session_state.auto_sale_code = ""
+                except Exception as e:
+                    st.error(f"Database Error: {e}")
 
-      "✍️ Manual Single Entry Mode",
+        st.text_input(
+            "⚡ Focus cursor here and scan Channel/Master SKU Barcode",
+            key="auto_sale_code",
+            on_change=handle_auto_sale_scan,
+        )
 
-      "📁 Bulk Sales Sheet Upload",
+    with s_tab2:
+        st.subheader("Upload Bulk Sales Sheet")
+        uploaded_sale_file = st.file_uploader(
+            "Choose sales file", type=["xlsx", "csv"], key="sale_bulk"
+        )
+        if uploaded_sale_file is not None:
+            bulk_sale_df = (
+                pd.read_csv(uploaded_sale_file)
+                if uploaded_sale_file.name.endswith(".csv")
+                else pd.read_excel(uploaded_sale_file)
+            )
+            if st.button("🚀 Process Bulk Sales Load"):
+                try:
+                    supabase.table("sale_data").insert(
+                        bulk_sale_df.to_dict(orient="records")
+                    ).execute()
+                    clear_app_cache()
+                    st.success("Sales Bulk Logs Added Successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error processing upload: {e}")
 
-  ])
-
-
-
-  # TAB 1: AUTO-PUSH SCAN SALE (WITH MASTER SKU RESOLUTION)
-
-  with s_tab1:
-
-    st.subheader("📷 Auto-Push Scanner for Channel Direct Sale")
-
-
-
-    col_s1, col_s2 = st.columns(2)
-
-    with col_s1:
-
-      scan_sale_type = st.selectbox(
-
-          "Order Type", ["SINGLE", "BUNDLE", "BUNDAL"], key="auto_sale_type"
-
-      )
-
-      scan_sale_brand = st.selectbox(
-
-          "Brand Name", ["VIDA LOCA", "YUGNIK"], key="auto_sale_brand"
-
-      )
-
-    with col_s2:
-
-      scan_sale_qty = st.number_input(
-
-          "Qty Sold", min_value=1, value=1, step=1, key="auto_sale_qty"
-
-      )
-
-      scan_sale_date = st.date_input(
-
-          "Order Date", date.today(), key="auto_sale_date"
-
-      )
-
-
-
-    def handle_auto_sale_scan():
-
-      raw_code = st.session_state.auto_sale_code.strip()
-
-      if raw_code:
-
-        # Resolve scan code to Master SKU / Channel SKU
-
-        target_sku = resolve_to_master_sku(raw_code, df_prod, df_map)
-
-
-
-        try:
-
-          sale_payload = {
-
-              "date": scan_sale_date.strftime("%Y-%m-%d"),
-
-              "channel_sku": target_sku,
-
-              "type": str(scan_sale_type).strip().upper(),
-
-              "brand": str(scan_sale_brand).strip().upper(),
-
-              "qty": int(scan_sale_qty),
-
-          }
-
-          supabase.table("sale_data").insert(sale_payload).execute()
-
-          clear_app_cache()
-
-          st.toast(
-
-              f"✅ Sale Deducted! {scan_sale_qty} Qty of Master SKU"
-
-              f" '{target_sku}'",
-
-              icon="📦",
-
-          )
-
-          st.session_state.auto_sale_code = ""
-
-        except Exception as e:
-
-          st.error(f"Database Error: {e}")
-
-
-
-    st.text_input(
-
-        "⚡ Focus cursor here and scan Channel/Master SKU Barcode",
-
-        key="auto_sale_code",
-
-        on_change=handle_auto_sale_scan,
-
+    st.write("---")
+    cols_to_view_s = [
+        c
+        for c in ["ID", "Date", "Channel SKU", "Type", "Brand", "Qty"]
+        if c in df_sales.columns
+    ]
+    st.dataframe(
+        df_sales[cols_to_view_s], use_container_width=True, hide_index=True
     )
-
-
-
-  # TAB 2: MANUAL ENTRY
-
-  with s_tab2:
-
-    st.subheader("Add Single Channel Sale Record")
-
-    with st.form("single_sale_form", clear_on_submit=True):
-
-      col_s1, col_s2 = st.columns(2)
-
-      with col_s1:
-
-        sale_date = st.date_input("Order Date", date.today())
-
-        channel_sku_list = (
-
-            sorted(list(df_map["Seller SKU on Channel"].dropna().unique()))
-
-            if not df_map.empty
-
-            else []
-
-        )
-
-        s_sku = (
-
-            st.selectbox("Select Channel SKU", channel_sku_list)
-
-            if channel_sku_list
-
-            else st.text_input("Enter Channel SKU").strip().upper()
-
-        )
-
-        s_type = st.selectbox("Order Type", ["SINGLE", "BUNDLE", "BUNDAL"])
-
-      with col_s2:
-
-        s_brand = st.selectbox("Brand Name", ["VIDA LOCA", "YUGNIK"])
-
-        s_qty = st.number_input(
-
-            "Order Quantity (Qty)", min_value=1, value=1, step=1
-
-        )
-
-
-
-      submit_sale_single = st.form_submit_button("🚀 Insert Sale Record")
-
-
-
-      if submit_sale_single and s_sku != "":
-
-        try:
-
-          target_sku = resolve_to_master_sku(s_sku, df_prod, df_map)
-
-          sale_payload = {
-
-              "date": sale_date.strftime 
-
