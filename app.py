@@ -1157,3 +1157,115 @@ elif menu == "📤 4. SALE DATA Sheet":
     st.dataframe(
         df_sales[cols_to_view_s], use_container_width=True, hide_index=True
     )
+with tab_m2:
+      st.subheader("Bulk Master SKU Upload via CSV / Excel")
+
+      # Template Generation
+      sample_master_data = pd.DataFrame(columns=[
+          "category_code",
+          "product_code",
+          "name",
+          "scan_identifier",
+          "color",
+          "size",
+          "brand",
+          "type",
+          "component_product_code",
+          "qty",
+          "image_url",
+      ])
+      sample_master_data.loc[0] = [
+          "CAT01",
+          "VL-TSHIRT-BLK-M",
+          "Vida Loca Black T-Shirt",
+          "890123456789",
+          "Black",
+          "M",
+          "VIDA LOCA",
+          "SINGLE",
+          "",
+          100,
+          "https://example.com/img.jpg",
+      ]
+
+      st.download_button(
+          label="📥 Download Master SKU Template (CSV)",
+          data=convert_df_to_csv(sample_master_data),
+          file_name="master_sku_template.csv",
+          mime="text/csv",
+      )
+
+      uploaded_master_file = st.file_uploader(
+          "Upload filled Master SKU file",
+          type=["csv", "xlsx"],
+          key="master_bulk_up",
+      )
+      if uploaded_master_file is not None:
+        df_upload = (
+            pd.read_csv(uploaded_master_file)
+            if uploaded_master_file.name.endswith(".csv")
+            else pd.read_excel(uploaded_master_file)
+        )
+        if st.button("🚀 Upload & Sync Master SKUs", key="btn_master_sync"):
+          try:
+            df_upload.columns = [c.strip().lower() for c in df_upload.columns]
+            # Fix for NaN issue: replace NaN with None for JSON compliance
+            df_upload = df_upload.where(pd.notnull(df_upload), None)
+            records = df_upload.to_dict(orient="records")
+
+            supabase.table("master_sku").insert(records).execute()
+            clear_app_cache()
+            st.success("🎉 Bulk Master SKUs successfully imported!")
+            st.rerun()
+          except Exception as e:
+            st.error(f"Error during bulk import: {e}")
+              with tab_c2:
+      st.subheader("Bulk Channel SKU Mapping Upload via CSV / Excel")
+
+      # Template Generation
+      sample_map_data = pd.DataFrame(columns=[
+          "seller_sku_on_channel",
+          "sku_code",
+          "channelName",
+          "pack_of",
+          "brand",
+      ])
+      sample_map_data.loc[0] = [
+          "AMZ-VL-TSHIRT-BLK",
+          "VL-TSHIRT-BLK-M",
+          "Amazon",
+          1,
+          "VIDA LOCA",
+      ]
+
+      st.download_button(
+          label="📥 Download Channel Mapping Template (CSV)",
+          data=convert_df_to_csv(sample_map_data),
+          file_name="channel_sku_mapping_template.csv",
+          mime="text/csv",
+      )
+
+      uploaded_map_file = st.file_uploader(
+          "Upload filled Channel Mapping file",
+          type=["csv", "xlsx"],
+          key="map_file_upload",
+      )
+      if uploaded_map_file is not None:
+        df_map_upload = (
+            pd.read_csv(uploaded_map_file)
+            if uploaded_map_file.name.endswith(".csv")
+            else pd.read_excel(uploaded_map_file)
+        )
+        if st.button("🚀 Upload & Sync Channel Maps", key="btn_channel_sync"):
+          try:
+            df_map_upload.columns = [c.strip().lower() for c in df_map_upload.columns]
+            # Fix for NaN issue: replace NaN with None for JSON compliance
+            df_map_upload = df_map_upload.where(pd.notnull(df_map_upload), None)
+            records_map = df_map_upload.to_dict(orient="records")
+
+            supabase.table("channel_sku_map").insert(records_map).execute()
+            clear_app_cache()
+            st.success("🎉 Bulk Channel SKU mappings imported!")
+            st.rerun()
+          except Exception as e:
+            st.error(f"Error during bulk import: {e}")
