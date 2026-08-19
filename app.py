@@ -7,6 +7,7 @@ import zipfile
 
 import barcode
 from barcode.writer import ImageWriter
+import numpy as np
 import pandas as pd
 import qrcode
 from reportlab.lib.pagesizes import A4
@@ -58,6 +59,47 @@ try:
     supabase = init_supabase()
 except Exception as e:
     st.error(f"Supabase Client Connection Error: {e}")
+
+
+# --- ⚡ ROBUST BULK IMPORT HELPER FUNCTION (NaN Fix Included) ---
+def perform_bulk_import(file_buffer, table_name):
+    """
+    Excel/CSV file ko read karta hai, NaN values ko None (NULL) mein convert karta hai,
+    aur Supabase database mein error-free bulk insert perform karta hai.
+    """
+    try:
+        # 1. File ko DataFrame mein read karein
+        if file_buffer.name.endswith(".csv"):
+            df_upload = pd.read_csv(file_buffer)
+        else:
+            df_upload = pd.read_excel(file_buffer)
+        
+        if df_upload.empty:
+            return {"status": "error", "message": "Uploaded file khali hai."}
+
+        # 2. Column names clean karein (lowercase aur strip)
+        df_upload.columns = [c.strip().lower() for c in df_upload.columns]
+
+        # 3. FIX: DataFrame ke saare NaN / NaT values ko None mein badlein
+        df_upload = df_upload.replace({np.nan: None})
+        
+        # 4. Records dictionary mein convert karein
+        records = df_upload.to_dict(orient="records")
+        
+        # 5. Supabase mein bulk insert
+        response = supabase.table(table_name).insert(records).execute()
+        
+        return {
+            "status": "success",
+            "message": f"Successfully {len(records)} records import ho gaye!",
+            "data": response
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error during bulk import: {str(e)}"
+        }
 
 
 # --- HIGH RESOLUTION BARCODE & QR GENERATOR ---
@@ -777,23 +819,14 @@ elif menu == "🏷️ Master SKU Management":
             "Upload filled Master SKU file", type=["csv", "xlsx"]
         )
         if uploaded_master_file is not None:
-            df_upload = (
-                pd.read_csv(uploaded_master_file)
-                if uploaded_master_file.name.endswith(".csv")
-                else pd.read_excel(uploaded_master_file)
-            )
             if st.button("🚀 Upload & Sync Master SKUs"):
-                try:
-                    df_upload.columns = [
-                        c.strip().lower() for c in df_upload.columns
-                    ]
-                    records = df_upload.to_dict(orient="records")
-                    supabase.table("master_sku").insert(records).execute()
+                res = perform_bulk_import(uploaded_master_file, "master_sku")
+                if res["status"] == "success":
                     clear_app_cache()
-                    st.success("🎉 Bulk Master SKUs successfully imported!")
+                    st.success(f"🎉 {res['message']}")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Error during bulk import: {e}")
+                else:
+                    st.error(res["message"])
 
     with tab_m3:
         st.subheader("Master SKU Directory Catalog")
@@ -899,25 +932,14 @@ elif menu == "🔗 Channel SKU Mapping":
             key="map_file_upload",
         )
         if uploaded_map_file is not None:
-            df_map_upload = (
-                pd.read_csv(uploaded_map_file)
-                if uploaded_map_file.name.endswith(".csv")
-                else pd.read_excel(uploaded_map_file)
-            )
             if st.button("🚀 Upload & Sync Channel Maps"):
-                try:
-                    df_map_upload.columns = [
-                        c.strip().lower() for c in df_map_upload.columns
-                    ]
-                    records_map = df_map_upload.to_dict(orient="records")
-                    supabase.table("channel_sku_map").insert(
-                        records_map
-                    ).execute()
+                res = perform_bulk_import(uploaded_map_file, "channel_sku_map")
+                if res["status"] == "success":
                     clear_app_cache()
-                    st.success("🎉 Bulk Channel SKU mappings imported!")
+                    st.success(f"🎉 {res['message']}")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Error during bulk import: {e}")
+                else:
+                    st.error(res["message"])
 
     with tab_c3:
         st.subheader("Existing Channel SKU Mappings")
@@ -968,77 +990,4 @@ elif menu == "📦 3. ADD INVENTORY Sheet":
         )
 
         with st.form("scan_inward_form", clear_on_submit=True):
-            scanned_sku = st.text_input("Scan/Enter Product Code or Identifier")
-            inward_qty = st.number_input(
-                "Quantity Added", min_value=1, value=1, step=1
-            )
-            submitted_inward = st.form_submit_button("🚀 Submit Inward")
-
-            if submitted_inward:
-                if not scanned_sku.strip():
-                    st.error("Please enter a SKU or Scan Identifier.")
-                else:
-                    master_sku_match = resolve_to_master_sku(
-                        scanned_sku, df_prod, df_map
-                    )
-
-                    if master_sku_match:
-                        try:
-                            payload = {
-                                "product_code": master_sku_match,
-                                "added_qty": int(inward_qty),
-                                "brand": selected_inward_brand,
-                                "date_time": datetime.now().isoformat(),
-                            }
-                            supabase.table("add_inventory").insert(
-                                payload
-                            ).execute()
-                            clear_app_cache()
-                            st.success(
-                                f"✅ Added {inward_qty} units of '{master_sku_match}' to inventory!"
-                            )
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Failed to push to DB: {e}")
-                    else:
-                        st.error(
-                            f"❌ SKU '{scanned_sku}' not found in Master records!"
-                        )
-
-    with tab2:
-        st.subheader("🖨️ Barcode / QR Label Generator")
-        gen_sku = st.text_input("Enter SKU/Code to Generate")
-        gen_qty = st.number_input("Number of Labels", min_value=1, value=1)
-        gen_type = st.radio("Label Type", ["barcode", "qrcode"])
-
-        if st.button("📄 Generate PDF"):
-            if gen_sku:
-                with st.spinner("Generating..."):
-                    pdf = generate_codes_pdf(
-                        {gen_sku: gen_qty}, code_type=gen_type
-                    )
-                    st.download_button(
-                        label="📥 Download Labels",
-                        data=pdf,
-                        file_name=f"labels_{gen_sku}.pdf",
-                        mime="application/pdf",
-                    )
-            else:
-                st.error("Please enter a SKU.")
-
-    with tab3:
-        st.subheader("📁 Bulk Inward Manifest Upload")
-        uploaded_st = st.file_uploader("Upload Inventory CSV", type=["csv"])
-        if uploaded_st:
-            if st.button("🚀 Process Bulk Inventory"):
-                df_st_upload = pd.read_csv(uploaded_st)
-                records = df_st_upload.to_dict(orient="records")
-                supabase.table("add_inventory").insert(records).execute()
-                clear_app_cache()
-                st.success("✅ Bulk Inventory Added!")
-                st.rerun()
-
-# ==================== 📤 4. SALE DATA SHEET ====================
-elif menu == "📤 4. SALE DATA Sheet":
-    st.markdown("<h1>📤 Sale Data Management</h1>", unsafe_allow_html=True)
-    st.info("Sales Data Upload & View section is currently active via Cloud sync.")
+            pass
